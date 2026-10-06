@@ -18,7 +18,7 @@ def list_ambulances(
     ),
     session: Session = Depends(get_session),
 ) -> list[Ambulance]:
-    stmt = select(Ambulance).order_by(Ambulance.call_sign)
+    mav_stmt = select(Ambulance).order_by(Ambulance.call_sign)
     if status is not None:
-        stmt = stmt.where(Ambulance.status == status)
-    return list(session.execute(stmt).scalars().all())
+        mav_stmt = mav_stmt.where(Ambulance.status == status)
+    return list(session.execute(mav_stmt).scalars().all())

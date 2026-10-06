@@ -23,7 +23,7 @@ def health(
 ) -> HealthOut:
     try:
         session.execute(text("SELECT 1"))
-        available = session.execute(
+        mav_available = session.execute(
             select(func.count())
             .select_from(Ambulance)
             .where(Ambulance.status == AmbulanceStatus.AVAILABLE)
@@ -41,5 +41,5 @@ def health(
         status="ok",
         database="connected",
         locking_mode=settings.locking_mode,
-        ambulances_available=available,
+        ambulances_available=mav_available,
     )

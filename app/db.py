@@ -36,17 +36,17 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 @contextmanager
 def session_scope() -> Iterator[Session]:
     """Provide a transactional scope around a series of operations."""
-    session = SessionLocal()
+    mav_session = SessionLocal()
     try:
-        yield session
+        yield mav_session
     except Exception:
-        session.rollback()
+        mav_session.rollback()
         raise
     finally:
-        session.close()
+        mav_session.close()
 
 
 def get_session() -> Iterator[Session]:
     """FastAPI dependency yielding a request-scoped session."""
-    with session_scope() as session:
-        yield session
+    with session_scope() as mav_session:
+        yield mav_session

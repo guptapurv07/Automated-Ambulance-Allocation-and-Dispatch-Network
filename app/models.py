@@ -134,6 +134,15 @@ class Dispatch(Base):
     )
 
     assigned_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # When the vehicle entered its *current* lifecycle phase. The simulation
+    # clock compares this against the phase's expected duration to decide when
+    # the dispatch should advance.
+    phase_started_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     distance_km: Mapped[float] = mapped_column(Float)
     eta_minutes: Mapped[float] = mapped_column(Float)
 

@@ -1,9 +1,13 @@
 """Emergency call intake.
 
-Today the intake handler allocates inline, so the whole pipeline is visible in
-one place. The queue and worker thread pool will sit between the two steps
-below: intake will persist the incident, hand it to the queue, and return
-202 Accepted while a worker performs the allocation.
+Intake is the *producer* side of the system. It validates the call, persists
+the incident, places it on the dispatch queue and returns immediately with
+202 Accepted. It does not allocate a vehicle.
+
+Allocation happens on a worker thread (app/core/dispatcher.py). Keeping the
+HTTP thread free is what allows many simultaneous callers to be accepted
+without one waiting behind another's database work -- and it is what creates
+the contention that the row locking exists to resolve.
 """
 
 import logging
@@ -12,14 +16,15 @@ from fastapi import APIRouter, Depends, HTTPException, status as http_status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import Settings, get_settings
-from app.core.allocation import NoAmbulanceAvailable, allocate_ambulance
+from app.core.queue import DispatchRequest
+from app.core.runtime import dispatch_queue
 from app.db import get_session
 from app.models import Incident
 from app.schemas import (
     AllocationResult,
     AmbulanceOut,
     DispatchOut,
+    IncidentAccepted,
     IncidentCreate,
     IncidentOut,
 )
@@ -29,13 +34,15 @@ logger = logging.getLogger("dispatch.intake")
 router = APIRouter(prefix="/incidents", tags=["incidents"])
 
 
-@router.post("", response_model=AllocationResult, status_code=http_status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=IncidentAccepted,
+    status_code=http_status.HTTP_202_ACCEPTED,
+)
 def report_incident(
-    payload: IncidentCreate,
-    session: Session = Depends(get_session),
-    settings: Settings = Depends(get_settings),
-) -> AllocationResult:
-    """Report an emergency and allocate the nearest available ambulance."""
+    payload: IncidentCreate, session: Session = Depends(get_session)
+) -> IncidentAccepted:
+    """Accept an emergency call and queue it for allocation."""
     incident = Incident(
         lat=payload.lat,
         lon=payload.lon,
@@ -44,31 +51,31 @@ def report_incident(
         description=payload.description,
     )
     session.add(incident)
+    # Committed before queueing: the emergency is recorded even if allocation
+    # later fails, and the worker needs a row it can load by id.
     session.commit()
 
+    dispatch_queue.put(
+        DispatchRequest(
+            incident_id=incident.id, severity=incident.severity.value
+        )
+    )
+
     logger.info(
-        "incident=%s REPORTED severity=%s at (%.5f, %.5f)",
+        "incident=%s QUEUED severity=%s at (%.5f, %.5f)  queue_depth=%d",
         incident.id,
         incident.severity.value,
         incident.lat,
         incident.lon,
+        dispatch_queue.depth,
     )
 
-    try:
-        dispatch = allocate_ambulance(session, incident, settings)
-    except NoAmbulanceAvailable as exc:
-        return AllocationResult(
-            incident=IncidentOut.model_validate(incident),
-            dispatch=None,
-            ambulance=None,
-            message=str(exc),
-        )
-
-    return AllocationResult(
-        incident=IncidentOut.model_validate(incident),
-        dispatch=DispatchOut.model_validate(dispatch),
-        ambulance=AmbulanceOut.model_validate(dispatch.ambulance),
-        message=f"Ambulance {dispatch.ambulance.call_sign} dispatched",
+    return IncidentAccepted(
+        incident_id=incident.id,
+        status=incident.status,
+        queue_depth=dispatch_queue.depth,
+        message="Emergency accepted and queued for dispatch",
+        poll=f"/incidents/{incident.id}",
     )
 
 
@@ -76,6 +83,7 @@ def report_incident(
 def get_incident(
     incident_id: int, session: Session = Depends(get_session)
 ) -> AllocationResult:
+    """Current state of an incident, including its dispatch once allocated."""
     incident = session.execute(
         select(Incident).where(Incident.id == incident_id)
     ).scalar_one_or_none()
@@ -93,6 +101,6 @@ def get_incident(
         message=(
             f"Ambulance {dispatch.ambulance.call_sign} dispatched"
             if dispatch
-            else "No ambulance assigned"
+            else f"Awaiting allocation (incident is {incident.status.value})"
         ),
     )

@@ -7,13 +7,13 @@ EARTH_RADIUS_KM = 6371.0
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance between two points, in kilometres."""
-    d_lat = radians(lat2 - lat1)
-    d_lon = radians(lon2 - lon1)
-    a = (
-        sin(d_lat / 2) ** 2
-        + cos(radians(lat1)) * cos(radians(lat2)) * sin(d_lon / 2) ** 2
+    mav_d_lat = radians(lat2 - lat1)
+    mav_d_lon = radians(lon2 - lon1)
+    mav_a = (
+        sin(mav_d_lat / 2) ** 2
+        + cos(radians(lat1)) * cos(radians(lat2)) * sin(mav_d_lon / 2) ** 2
     )
-    return 2 * EARTH_RADIUS_KM * asin(sqrt(a))
+    return 2 * EARTH_RADIUS_KM * asin(sqrt(mav_a))
 
 
 def eta_minutes(distance_km: float, avg_speed_kmph: float) -> float:

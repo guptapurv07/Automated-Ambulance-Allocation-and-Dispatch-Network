@@ -43,29 +43,29 @@ HOSPITALS: list[tuple[str, float, float, int]] = [
 
 def ensure_database() -> None:
     """Create the target database if it does not exist yet."""
-    settings = get_settings()
-    server = create_engine(settings.server_url, isolation_level="AUTOCOMMIT")
-    with server.connect() as conn:
-        conn.execute(
+    mav_settings = get_settings()
+    mav_server = create_engine(mav_settings.server_url, isolation_level="AUTOCOMMIT")
+    with mav_server.connect() as mav_conn:
+        mav_conn.execute(
             text(
-                f"CREATE DATABASE IF NOT EXISTS `{settings.db_name}` "
+                f"CREATE DATABASE IF NOT EXISTS `{mav_settings.db_name}` "
                 "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
             )
         )
-    server.dispose()
-    print(f"  database `{settings.db_name}` ready")
+    mav_server.dispose()
+    print(f"  database `{mav_settings.db_name}` ready")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Seed the dispatch database.")
-    parser.add_argument(
+    mav_parser = argparse.ArgumentParser(description="Seed the dispatch database.")
+    mav_parser.add_argument(
         "--reset", action="store_true", help="drop all tables before seeding"
     )
-    args = parser.parse_args()
+    mav_args = mav_parser.parse_args()
 
-    settings = get_settings()
-    print(f"Connecting to MySQL at {settings.db_host}:{settings.db_port} "
-          f"as {settings.db_user}")
+    mav_settings = get_settings()
+    print(f"Connecting to MySQL at {mav_settings.db_host}:{mav_settings.db_port} "
+          f"as {mav_settings.db_user}")
 
     try:
         ensure_database()
@@ -77,40 +77,40 @@ def main() -> int:
     # Imported here so the engine is built after the database exists.
     from app.db import SessionLocal, engine
 
-    if args.reset:
+    if mav_args.reset:
         Base.metadata.drop_all(engine)
         print("  existing tables dropped")
 
     Base.metadata.create_all(engine)
     print(f"  tables ready: {', '.join(sorted(Base.metadata.tables))}")
 
-    with SessionLocal() as session:
-        existing = session.execute(
+    with SessionLocal() as mav_session:
+        mav_existing = mav_session.execute(
             select(func.count()).select_from(Ambulance)
         ).scalar_one()
 
-        if existing:
-            print(f"\n  Already seeded ({existing} ambulances). "
+        if mav_existing:
+            print(f"\n  Already seeded ({mav_existing} ambulances). "
                   "Use --reset to rebuild.")
             return 0
 
-        session.add_all(
+        mav_session.add_all(
             Ambulance(
                 call_sign=call_sign,
-                station_name=station,
+                station_name=mav_station,
                 base_lat=lat,
                 base_lon=lon,
                 current_lat=lat,
                 current_lon=lon,
                 status=AmbulanceStatus.AVAILABLE,
             )
-            for call_sign, station, lat, lon in STATIONS
+            for call_sign, mav_station, lat, lon in STATIONS
         )
-        session.add_all(
-            Hospital(name=name, lat=lat, lon=lon, bed_capacity=beds)
-            for name, lat, lon, beds in HOSPITALS
+        mav_session.add_all(
+            Hospital(name=name, lat=lat, lon=lon, bed_capacity=mav_beds)
+            for name, lat, lon, mav_beds in HOSPITALS
         )
-        session.commit()
+        mav_session.commit()
 
     print(f"\n  Seeded {len(STATIONS)} ambulances and {len(HOSPITALS)} hospitals "
           "across Dehradun.")

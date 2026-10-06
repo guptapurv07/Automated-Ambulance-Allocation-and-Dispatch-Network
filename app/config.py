@@ -24,6 +24,26 @@ class Settings(BaseSettings):
     # "standard travel times" assumption.
     avg_speed_kmph: float = 32.0
 
+    # Artificially widens the gap between reading a vehicle's availability and
+    # writing the claim. Zero in normal operation. The benchmark sets it so the
+    # unsafe baseline fails reproducibly instead of once in every few runs; it
+    # is applied identically in every locking mode, so comparisons stay fair.
+    race_window_ms: float = 0.0
+
+    # --- Concurrency --------------------------------------------------------
+    # Number of worker threads draining the dispatch queue. Allocation work is
+    # I/O-bound on database waits, so threads genuinely overlap despite the GIL.
+    worker_pool_size: int = 4
+
+    # --- Simulation clock ---------------------------------------------------
+    # Advances active dispatches through their lifecycle so vehicles return to
+    # service instead of being claimed once and never released.
+    sim_clock_enabled: bool = True
+    # 60.0 means one simulated minute passes per real second, so a call that
+    # would take ~25 minutes completes in ~25 seconds of demo time.
+    sim_time_scale: float = 60.0
+    sim_tick_seconds: float = 1.0
+
     @property
     def database_url(self) -> str:
         return (

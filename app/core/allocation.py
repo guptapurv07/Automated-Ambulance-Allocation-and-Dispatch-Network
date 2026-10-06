@@ -57,18 +57,18 @@ def _rank_candidates(
 
     Returns a list of (ambulance_id, distance_km), nearest first.
     """
-    rows = session.execute(
+    mav_rows = session.execute(
         select(Ambulance.id, Ambulance.current_lat, Ambulance.current_lon).where(
             Ambulance.status == AmbulanceStatus.AVAILABLE
         )
     ).all()
 
-    ranked = [
-        (row.id, haversine_km(incident.lat, incident.lon, row.current_lat, row.current_lon))
-        for row in rows
+    mav_ranked = [
+        (mav_row.id, haversine_km(incident.lat, incident.lon, mav_row.current_lat, mav_row.current_lon))
+        for mav_row in mav_rows
     ]
-    ranked.sort(key=lambda pair: pair[1])
-    return ranked
+    mav_ranked.sort(key=lambda pair: pair[1])
+    return mav_ranked
 
 
 def allocate_ambulance(
@@ -78,24 +78,24 @@ def allocate_ambulance(
 
     Raises NoAmbulanceAvailable if every candidate was taken or is busy.
     """
-    ranked = _rank_candidates(session, incident)
-    if not ranked:
+    mav_ranked = _rank_candidates(session, incident)
+    if not mav_ranked:
         logger.warning("incident=%s no available vehicles in fleet", incident.id)
         _mark_unassigned(session, incident)
         raise NoAmbulanceAvailable("No ambulance is currently available")
 
-    shortlist = ranked[:CANDIDATE_POOL_SIZE]
-    distance_by_id = dict(shortlist)
+    mav_shortlist = mav_ranked[:CANDIDATE_POOL_SIZE]
+    mav_distance_by_id = dict(mav_shortlist)
 
     # End the read transaction before opening the locking one, so no snapshot
     # is held across the two phases.
     session.rollback()
 
     # --- Phase 2: the critical section -----------------------------------
-    stmt = (
+    mav_stmt = (
         select(Ambulance)
         .where(
-            Ambulance.id.in_(distance_by_id.keys()),
+            Ambulance.id.in_(mav_distance_by_id.keys()),
             Ambulance.status == AmbulanceStatus.AVAILABLE,
         )
         # Ascending primary-key order: the total ordering that prevents
@@ -103,60 +103,67 @@ def allocate_ambulance(
         .order_by(Ambulance.id)
     )
 
-    mode = settings.locking_mode
-    if mode == "for_update":
-        stmt = stmt.with_for_update()
-    elif mode == "skip_locked":
-        stmt = stmt.with_for_update(skip_locked=True)
-    elif mode != "none":
-        raise ValueError(f"Unknown LOCKING_MODE: {mode!r}")
+    mav_mode = settings.locking_mode
+    if mav_mode == "for_update":
+        mav_stmt = mav_stmt.with_for_update()
+    elif mav_mode == "skip_locked":
+        mav_stmt = mav_stmt.with_for_update(skip_locked=True)
+    elif mav_mode != "none":
+        raise ValueError(f"Unknown LOCKING_MODE: {mav_mode!r}")
 
-    started = time.perf_counter()
-    locked = session.execute(stmt).scalars().all()
-    lock_wait_ms = (time.perf_counter() - started) * 1000
+    mav_started = time.perf_counter()
+    mav_locked = session.execute(mav_stmt).scalars().all()
+    mav_lock_wait_ms = (time.perf_counter() - mav_started) * 1000
 
-    if not locked:
+    # The read-to-write gap. Under `for_update` the rows above are already
+    # locked, so pausing here costs time but changes nothing. Under `none`
+    # nothing is held, and this is the window in which a second worker can
+    # read the same vehicle as available and claim it too.
+    if settings.race_window_ms > 0:
+        time.sleep(settings.race_window_ms / 1000.0)
+
+    if not mav_locked:
         logger.warning(
             "incident=%s all %d candidates were claimed before locking "
             "(lock_wait=%.1fms)",
             incident.id,
-            len(shortlist),
-            lock_wait_ms,
+            len(mav_shortlist),
+            mav_lock_wait_ms,
         )
         session.rollback()
         _mark_unassigned(session, incident)
         raise NoAmbulanceAvailable("All candidate ambulances were just taken")
 
     # Of the rows actually held, take the nearest.
-    chosen = min(locked, key=lambda amb: distance_by_id[amb.id])
-    distance_km = distance_by_id[chosen.id]
-    eta = eta_minutes(distance_km, settings.avg_speed_kmph)
+    mav_chosen = min(mav_locked, key=lambda amb: mav_distance_by_id[amb.id])
+    distance_km = mav_distance_by_id[mav_chosen.id]
+    mav_eta = eta_minutes(distance_km, settings.avg_speed_kmph)
 
-    chosen.status = AmbulanceStatus.ASSIGNED
+    mav_chosen.status = AmbulanceStatus.ASSIGNED
     incident.status = IncidentStatus.ASSIGNED
 
-    dispatch = Dispatch(
+    mav_dispatch = Dispatch(
         incident_id=incident.id,
-        ambulance_id=chosen.id,
+        ambulance_id=mav_chosen.id,
         distance_km=round(distance_km, 3),
-        eta_minutes=round(eta, 1),
+        eta_minutes=round(mav_eta, 1),
     )
-    session.add(dispatch)
+    session.add(mav_dispatch)
     session.commit()
 
     logger.info(
         "incident=%s ASSIGNED %s  distance=%.2fkm eta=%.1fmin "
         "candidates=%d locked=%d lock_wait=%.1fms mode=%s",
         incident.id,
-        chosen.call_sign,
+        mav_chosen.call_sign,
         distance_km,
-        eta,
-        len(shortlist),
-        len(locked),
-        lock_wait_ms,
-        mode,
+        mav_eta,
+        len(mav_shortlist),
+        len(mav_locked),
+        mav_lock_wait_ms,
+        mav_mode,
     )
-    return dispatch
+    return mav_dispatch
 
 
 def _mark_unassigned(session: Session, incident: Incident) -> None:

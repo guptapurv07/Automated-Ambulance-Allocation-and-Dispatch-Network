@@ -52,9 +52,22 @@ class DispatchOut(BaseModel):
     incident_id: int
     ambulance_id: int
     assigned_at: datetime
+    phase_started_at: datetime
+    completed_at: datetime | None = None
     distance_km: float
     eta_minutes: float
     status: DispatchStatus
+
+
+class TransitionOut(BaseModel):
+    """Result of advancing a dispatch through its lifecycle."""
+
+    dispatch_id: int
+    call_sign: str
+    previous_status: AmbulanceStatus
+    new_status: AmbulanceStatus
+    dispatch_status: DispatchStatus
+    message: str
 
 
 class IncidentOut(BaseModel):
@@ -77,6 +90,28 @@ class AllocationResult(BaseModel):
     dispatch: DispatchOut | None = None
     ambulance: AmbulanceOut | None = None
     message: str
+
+
+class IncidentAccepted(BaseModel):
+    """Response for POST /incidents.
+
+    Intake does not wait for allocation. The incident is persisted and queued,
+    and a worker thread assigns a vehicle; poll the incident to see the result.
+    """
+
+    incident_id: int
+    status: IncidentStatus
+    queue_depth: int
+    message: str
+    poll: str
+
+
+class QueueStatsOut(BaseModel):
+    """Live view of the concurrency machinery."""
+
+    queue: dict
+    workers: dict
+    clock: dict
 
 
 class HealthOut(BaseModel):
