@@ -5,7 +5,7 @@
 
 ---
 
-## 📌 Project Overview & Core Idea
+##  Project Overview & Core Idea
 
 When an emergency occurs in a public space, multiple bystanders dial 108/112 at the same
 moment, and multiple unrelated emergencies compete for the same nearby vehicles. Standard
@@ -23,7 +23,7 @@ project supplies the missing OS and DBMS layer.
 
 ---
 
-## 🎯 The Problem: Two Distinct Race Conditions
+##  The Problem: Two Distinct Race Conditions
 
 A key design insight of this project is that emergency dispatch contains **two different
 concurrency failures**, which require **two different mechanisms**. Treating them as one
@@ -58,7 +58,7 @@ The system implements both.
 
 ---
 
-## ⚙️ System Workflow & Architecture
+##  System Workflow & Architecture
 
 ```
                          Simulated 108/112 calls
@@ -129,7 +129,7 @@ The system implements both.
 
 ---
 
-## 🔒 Concurrency Design
+##  Concurrency Design
 
 ### Operating-System Layer
 
@@ -158,7 +158,7 @@ locking actually prevents misallocation rather than merely asserting it.
 
 ---
 
-## 🗄️ Data Model
+##  Data Model
 
 | Table | Purpose |
 |---|---|
@@ -178,7 +178,7 @@ state and reward space for the Reinforcement Learning policy.
 
 ---
 
-## 🛠️ Technology Stack
+##  Technology Stack
 
 * **Backend Framework:** Python 3.13, FastAPI, Uvicorn
 * **ORM / DB Driver:** SQLAlchemy 2.x, PyMySQL
@@ -191,7 +191,7 @@ state and reward space for the Reinforcement Learning policy.
 
 ---
 
-## 📁 Project Structure
+##  Project Structure
 
 ```
 app/
@@ -210,7 +210,7 @@ frontend/            Operations dashboard
 
 ---
 
-## 🚀 Local Setup & Installation
+##  Local Setup & Installation
 
 ### Prerequisites
 
@@ -262,7 +262,7 @@ frontend/            Operations dashboard
 
 ---
 
-## 📡 API Reference
+##  API Reference
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -274,7 +274,7 @@ frontend/            Operations dashboard
 
 ---
 
-## 📋 Assumptions
+##  Assumptions
 
 * Emergency calls are **simulated**; the system does not connect to a live 108/112 feed.
 * Coverage is limited to a **single city service area** (Dehradun), not a state or country.
@@ -284,7 +284,7 @@ frontend/            Operations dashboard
 
 ---
 
-## 👥 Team
+##  Team
 
 | Role | Name | Student ID |
 |---|---|---|
