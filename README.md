@@ -289,5 +289,5 @@ frontend/            Operations dashboard
 | Role | Name | Student ID |
 |---|---|---|
 | Team Lead | Apurv Gupta | 24021131 |
-| Member | Kartikey Kashyap | 24021131 |
+| Member | Kartikey Kashyap | 24021132 |
 | Member | Ambar Sarin | 24022059 |
