@@ -113,6 +113,10 @@ def run_mode(mode: str, calls: int, workers: int, race_window: float,
         "WORKER_POOL_SIZE": str(workers),
         "RACE_WINDOW_MS": str(race_window),
         "SIM_CLOCK_ENABLED": "false",   # vehicles must not recycle mid-run
+        # These calls stand for 40 different emergencies that happen to be
+        # close together. The deduplication gate would merge them, so it is
+        # switched off here; bench/dedup.py measures that gate on its own.
+        "DEDUP_ENABLED": "false",
     }
     mav_proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app",

@@ -2,7 +2,8 @@
 
 The queue, the worker pool and the simulation clock are created once per
 process and shared: the API layer is the producer, the pool is the consumer,
-and the clock cycles vehicles back into the available fleet.
+and the clock cycles vehicles back into the available fleet and re-queues the
+incidents that were still waiting for one.
 
 They live here rather than in app/main.py so that route modules can reach them
 without importing the FastAPI application, which would be circular.
@@ -26,4 +27,4 @@ worker_pool = WorkerPool(
     size=settings.worker_pool_size,
 )
 
-simulation_clock = SimulationClock(settings)
+simulation_clock = SimulationClock(settings, queue=dispatch_queue)

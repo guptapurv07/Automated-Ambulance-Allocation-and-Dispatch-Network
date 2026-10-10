@@ -15,6 +15,12 @@ Second, **releasing a vehicle is a contended write, exactly like claiming one**.
 If the simulation clock releases an ambulance at the same moment a worker is
 evaluating it as a candidate, the two must not interleave. So transitions take
 the same `SELECT ... FOR UPDATE` row lock that allocation uses.
+
+Third, **the vehicle's position follows the call**. On reaching the scene the
+ambulance is placed at the incident. On leaving, the receiving hospital is
+chosen as the one nearest to the incident -- where the patient is, not where
+the ambulance happened to start from -- and recorded on the dispatch. On
+arrival the ambulance is placed at that hospital.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.geo import haversine_km
+from app.geo import eta_minutes, haversine_km
 from app.models import (
     Ambulance,
     AmbulanceStatus,
@@ -47,15 +53,20 @@ LIFECYCLE: tuple[AmbulanceStatus, ...] = (
     AmbulanceStatus.AVAILABLE,
 )
 
-# How long each phase lasts, in simulated minutes. EN_ROUTE is None because it
-# is not fixed -- it uses the ETA computed for that specific dispatch.
+# How long each phase lasts, in simulated minutes. The two journeys are None
+# because they are not fixed -- each depends on the distance that particular
+# dispatch has to cover.
 PHASE_MINUTES: dict[AmbulanceStatus, float | None] = {
     AmbulanceStatus.ASSIGNED: 0.5,       # crew acknowledges and rolls
     AmbulanceStatus.EN_ROUTE: None,      # travel to scene == dispatch.eta_minutes
     AmbulanceStatus.AT_SCENE: 5.0,       # stabilise and load the patient
-    AmbulanceStatus.TRANSPORTING: 8.0,   # travel to the receiving hospital
+    AmbulanceStatus.TRANSPORTING: None,  # travel from the scene to the hospital
     AmbulanceStatus.AT_HOSPITAL: 5.0,    # handover, then back in service
 }
+
+# Trip time used only when a dispatch has no hospital recorded (an empty
+# hospitals table), so that the call can still run to completion.
+FALLBACK_TRANSPORT_MINUTES = 8.0
 
 
 class InvalidTransition(Exception):
@@ -75,10 +86,31 @@ def next_status(current: AmbulanceStatus) -> AmbulanceStatus:
     return LIFECYCLE[mav_index + 1]
 
 
-def phase_duration_minutes(status: AmbulanceStatus, dispatch: Dispatch) -> float:
+def hospital_trip_km(dispatch: Dispatch) -> float | None:
+    """Distance from the patient to the receiving hospital, once one is chosen."""
+    if dispatch.hospital is None or dispatch.incident is None:
+        return None
+    return haversine_km(
+        dispatch.incident.lat,
+        dispatch.incident.lon,
+        dispatch.hospital.lat,
+        dispatch.hospital.lon,
+    )
+
+
+def phase_duration_minutes(
+    status: AmbulanceStatus, dispatch: Dispatch, avg_speed_kmph: float
+) -> float:
     """How long a dispatch should remain in `status` before advancing."""
     mav_fixed = PHASE_MINUTES.get(status)
-    return dispatch.eta_minutes if mav_fixed is None else mav_fixed
+    if mav_fixed is not None:
+        return mav_fixed
+    if status is AmbulanceStatus.TRANSPORTING:
+        mav_trip_km = hospital_trip_km(dispatch)
+        if mav_trip_km is None:
+            return FALLBACK_TRANSPORT_MINUTES
+        return eta_minutes(mav_trip_km, avg_speed_kmph)
+    return dispatch.eta_minutes
 
 
 def _nearest_hospital(session: Session, lat: float, lon: float) -> Hospital | None:
@@ -112,14 +144,31 @@ def advance_dispatch(session: Session, dispatch_id: int) -> AmbulanceStatus:
     mav_upcoming = next_status(current)
     mav_now = datetime.now()
 
-    if mav_upcoming is AmbulanceStatus.AT_HOSPITAL:
-        # The vehicle finishes its run at the receiving hospital, not at base.
-        mav_hospital = _nearest_hospital(
-            session, mav_ambulance.current_lat, mav_ambulance.current_lon
-        )
+    mav_incident = dispatch.incident
+    mav_note = ""
+
+    if mav_upcoming is AmbulanceStatus.AT_SCENE:
+        # The vehicle is now with the patient.
+        mav_ambulance.current_lat = mav_incident.lat
+        mav_ambulance.current_lon = mav_incident.lon
+
+    elif mav_upcoming is AmbulanceStatus.TRANSPORTING:
+        # Choose the receiving hospital as the vehicle leaves the scene, from
+        # the incident's position: the patient is there, so that is the trip
+        # that matters. Stored on the dispatch so the journey time, the arrival
+        # point and anything shown to a user all agree on the same hospital.
+        mav_hospital = _nearest_hospital(session, mav_incident.lat, mav_incident.lon)
         if mav_hospital is not None:
-            mav_ambulance.current_lat = mav_hospital.lat
-            mav_ambulance.current_lon = mav_hospital.lon
+            dispatch.hospital = mav_hospital
+            mav_note = "  hospital=%s trip=%.2fkm" % (
+                mav_hospital.name,
+                hospital_trip_km(dispatch),
+            )
+
+    elif mav_upcoming is AmbulanceStatus.AT_HOSPITAL and dispatch.hospital is not None:
+        # The vehicle finishes its run at the receiving hospital, not at base.
+        mav_ambulance.current_lat = dispatch.hospital.lat
+        mav_ambulance.current_lon = dispatch.hospital.lon
 
     mav_ambulance.status = mav_upcoming
     dispatch.phase_started_at = mav_now
@@ -127,17 +176,20 @@ def advance_dispatch(session: Session, dispatch_id: int) -> AmbulanceStatus:
     if mav_upcoming is AmbulanceStatus.AVAILABLE:
         dispatch.status = DispatchStatus.COMPLETED
         dispatch.completed_at = mav_now
-        if dispatch.incident is not None:
-            dispatch.incident.status = IncidentStatus.RESOLVED
+        mav_incident.status = IncidentStatus.RESOLVED
+        # Release the deduplication key, so that a later emergency at the
+        # same place is a new incident and not a duplicate of a finished one.
+        mav_incident.dedup_key = None
 
     session.commit()
 
     logger.info(
-        "dispatch=%s %s -> %s  %s",
+        "dispatch=%s %s -> %s  %s%s",
         dispatch_id,
         current.value,
         mav_upcoming.value,
         mav_ambulance.call_sign,
+        mav_note,
     )
     return mav_upcoming
 

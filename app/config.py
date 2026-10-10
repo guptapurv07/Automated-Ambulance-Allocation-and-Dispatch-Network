@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # "standard travel times" assumption.
     avg_speed_kmph: float = 32.0
 
+    # Deduplication gate (app/core/dedup.py). When off, every call becomes its
+    # own incident. That is the unsafe baseline the dedup benchmark compares
+    # against, in the same way LOCKING_MODE=none is the baseline for locking.
+    dedup_enabled: bool = True
+
     # Artificially widens the gap between reading a vehicle's availability and
     # writing the claim. Zero in normal operation. The benchmark sets it so the
     # unsafe baseline fails reproducibly instead of once in every few runs; it

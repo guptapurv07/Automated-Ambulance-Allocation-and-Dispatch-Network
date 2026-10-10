@@ -6,12 +6,12 @@ time. Every concurrency mechanism in the project exists to protect it.
 """
 
 from __future__ import annotations
-
 import enum
 from datetime import datetime
 
 from sqlalchemy import (
     DateTime,
+    Double,
     Enum,
     Float,
     ForeignKey,
@@ -21,10 +21,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-
 class Base(DeclarativeBase):
     pass
-
 
 class AmbulanceStatus(str, enum.Enum):
     """Vehicle lifecycle.
@@ -49,6 +47,23 @@ class Severity(str, enum.Enum):
     LOW = "LOW"
 
 
+class IncidentType(str, enum.Enum):
+    """What kind of emergency a caller is reporting.
+
+    Part of the deduplication key: two reports are only treated as the same
+    emergency if they also agree on the type, so a heart attack next to a road
+    accident is never merged into it.
+    """
+
+    ROAD_ACCIDENT = "ROAD_ACCIDENT"
+    CARDIAC = "CARDIAC"
+    BREATHING = "BREATHING"
+    INJURY = "INJURY"
+    FIRE = "FIRE"
+    PREGNANCY = "PREGNANCY"
+    OTHER = "OTHER"
+
+
 class IncidentStatus(str, enum.Enum):
     REPORTED = "REPORTED"
     ASSIGNED = "ASSIGNED"
@@ -69,10 +84,12 @@ class Ambulance(Base):
     call_sign: Mapped[str] = mapped_column(String(16), unique=True, index=True)
     station_name: Mapped[str] = mapped_column(String(80))
 
-    base_lat: Mapped[float] = mapped_column(Float)
-    base_lon: Mapped[float] = mapped_column(Float)
-    current_lat: Mapped[float] = mapped_column(Float)
-    current_lon: Mapped[float] = mapped_column(Float)
+    # Positions are DOUBLE throughout the schema. MySQL returns a FLOAT with
+    # only six significant digits, which rounds a position to about 10 metres.
+    base_lat: Mapped[float] = mapped_column(Double)
+    base_lon: Mapped[float] = mapped_column(Double)
+    current_lat: Mapped[float] = mapped_column(Double)
+    current_lon: Mapped[float] = mapped_column(Double)
 
     status: Mapped[AmbulanceStatus] = mapped_column(
         Enum(AmbulanceStatus), default=AmbulanceStatus.AVAILABLE, index=True
@@ -91,8 +108,8 @@ class Hospital(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), unique=True)
-    lat: Mapped[float] = mapped_column(Float)
-    lon: Mapped[float] = mapped_column(Float)
+    lat: Mapped[float] = mapped_column(Double)
+    lon: Mapped[float] = mapped_column(Double)
     bed_capacity: Mapped[int] = mapped_column(Integer, default=0)
 
 
@@ -106,13 +123,28 @@ class Incident(Base):
     caller_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    lat: Mapped[float] = mapped_column(Float)
-    lon: Mapped[float] = mapped_column(Float)
+    lat: Mapped[float] = mapped_column(Double)
+    lon: Mapped[float] = mapped_column(Double)
 
+    incident_type: Mapped[IncidentType] = mapped_column(
+        Enum(IncidentType), default=IncidentType.OTHER
+    )
     severity: Mapped[Severity] = mapped_column(Enum(Severity), default=Severity.HIGH)
     status: Mapped[IncidentStatus] = mapped_column(
         Enum(IncidentStatus), default=IncidentStatus.REPORTED, index=True
     )
+
+    # Deduplication, see app/core/dedup.py. The key is derived from this
+    # incident's location, report time and type. The UNIQUE index is what makes
+    # the database refuse a second incident for the same emergency. The key is
+    # cleared when the incident is resolved, so the same place can have a new
+    # emergency later.
+    dedup_key: Mapped[str | None] = mapped_column(
+        String(64), unique=True, nullable=True
+    )
+    # How many callers reported this emergency. A duplicate report raises this
+    # count instead of creating another incident.
+    report_count: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
     dispatch: Mapped["Dispatch | None"] = relationship(
         back_populates="incident", uselist=False
@@ -132,6 +164,11 @@ class Dispatch(Base):
     ambulance_id: Mapped[int] = mapped_column(
         ForeignKey("ambulances.id"), index=True
     )
+    # The receiving hospital: the one nearest to the incident. It is chosen
+    # when the vehicle leaves the scene, so it is null before that point.
+    hospital_id: Mapped[int | None] = mapped_column(
+        ForeignKey("hospitals.id"), nullable=True, index=True
+    )
 
     assigned_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -149,6 +186,6 @@ class Dispatch(Base):
     status: Mapped[DispatchStatus] = mapped_column(
         Enum(DispatchStatus), default=DispatchStatus.ACTIVE
     )
-
     incident: Mapped["Incident"] = relationship(back_populates="dispatch")
     ambulance: Mapped["Ambulance"] = relationship(back_populates="dispatches")
+    hospital: Mapped["Hospital | None"] = relationship()

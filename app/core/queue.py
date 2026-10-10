@@ -39,7 +39,6 @@ class DispatchRequest:
         mav_delta = datetime.now(timezone.utc) - self.enqueued_at
         return mav_delta.total_seconds() * 1000
 
-
 class Scheduler(Protocol):
     """Decides which pending request a free worker should take next.
 
@@ -54,7 +53,6 @@ class Scheduler(Protocol):
         """Return the index of the request to dequeue. `pending` is non-empty."""
         ...
 
-
 class FifoScheduler:
     """First in, first out. Fair, but ignores how urgent a call is."""
 
@@ -62,7 +60,6 @@ class FifoScheduler:
 
     def select(self, pending: list[DispatchRequest]) -> int:
         return 0
-
 
 class DispatchQueue:
     """A bounded-wait, thread-safe queue of pending dispatch requests."""
