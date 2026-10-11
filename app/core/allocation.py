@@ -38,6 +38,7 @@ from app.models import (
     Incident,
     IncidentStatus,
 )
+from app.policy.base import GreedyPolicy, Policy
 
 logger = logging.getLogger("dispatch.allocation")
 
@@ -72,7 +73,10 @@ def _rank_candidates(
 
 
 def allocate_ambulance(
-    session: Session, incident: Incident, settings: Settings
+    session: Session,
+    incident: Incident,
+    settings: Settings,
+    policy: Policy | None = None,
 ) -> Dispatch:
     """Allocate the best claimable ambulance to `incident` and commit.
 
@@ -84,7 +88,10 @@ def allocate_ambulance(
         _mark_unassigned(session, incident)
         raise NoAmbulanceAvailable("No ambulance is currently available")
 
-    mav_shortlist = mav_ranked[:CANDIDATE_POOL_SIZE]
+    # The policy decides the order, still in phase 1 with no lock held. GreedyPolicy keeps
+    # nearest-first, which is the behaviour before policies existed.
+    mav_ordered = (policy or GreedyPolicy()).order(incident, mav_ranked)
+    mav_shortlist = mav_ordered[:CANDIDATE_POOL_SIZE]
     mav_distance_by_id = dict(mav_shortlist)
 
     # End the read transaction before opening the locking one, so no snapshot
@@ -134,8 +141,11 @@ def allocate_ambulance(
         _mark_unassigned(session, incident)
         raise NoAmbulanceAvailable("All candidate ambulances were just taken")
 
-    # Of the rows actually held, take the nearest.
-    mav_chosen = min(mav_locked, key=lambda amb: mav_distance_by_id[amb.id])
+    # Of the rows actually held, take the first one in the policy's order.
+    mav_locked_by_id = {mav_amb.id: mav_amb for mav_amb in mav_locked}
+    mav_chosen = next(
+        mav_locked_by_id[mav_id] for mav_id, _ in mav_shortlist if mav_id in mav_locked_by_id
+    )
     distance_km = mav_distance_by_id[mav_chosen.id]
     mav_eta = eta_minutes(distance_km, settings.avg_speed_kmph)
 
