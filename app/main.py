@@ -8,7 +8,8 @@ from fastapi import FastAPI
 
 from app.api import ambulances, dispatches, health, incidents, queue
 from app.config import get_settings
-from app.core.runtime import simulation_clock, worker_pool
+from app.core.dispatcher import recover_unfinished_incidents
+from app.core.runtime import dispatch_queue, simulation_clock, worker_pool
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,10 +25,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Start the background threads on boot, shut them down cleanly on exit.
 
     Order matters. The pool starts first so that no request can be queued
-    before there is a worker to consume it, and stops last so that queued work
-    is drained rather than dropped.
+    before there is a worker to consume it. Calls that were accepted before
+    the last shutdown but never dispatched are then put back on the queue. On
+    exit the clock stops first and the pool last, and the pool finishes the
+    queued calls before its workers stop.
     """
     worker_pool.start()
+    recover_unfinished_incidents(dispatch_queue)
     if settings.sim_clock_enabled:
         simulation_clock.start()
     try:

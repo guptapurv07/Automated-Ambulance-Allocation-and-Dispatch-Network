@@ -25,11 +25,20 @@ def list_dispatches(
     status: DispatchStatus | None = Query(
         default=None, description="Filter by dispatch status"
     ),
+    limit: int = Query(default=100, ge=1, le=1000, description="Rows per page"),
+    offset: int = Query(default=0, ge=0, description="Rows to skip"),
     session: Session = Depends(get_session),
 ) -> list[Dispatch]:
-    mav_stmt = select(Dispatch).order_by(Dispatch.assigned_at.desc())
+    """Dispatch records, newest first, one page at a time.
+
+    The table keeps every call ever made, so it is never returned whole.
+    """
+    # Newest first by primary key: ids are handed out in order of creation,
+    # and the primary key needs no extra index to sort by.
+    mav_stmt = select(Dispatch).order_by(Dispatch.id.desc())
     if status is not None:
         mav_stmt = mav_stmt.where(Dispatch.status == status)
+    mav_stmt = mav_stmt.limit(limit).offset(offset)
     return list(session.execute(mav_stmt).scalars().all())
 
 
@@ -46,7 +55,7 @@ def _transition(session: Session, dispatch_id: int, run_to_completion: bool):
         if run_to_completion:
             new_status = complete_dispatch(session, dispatch_id)
         else:
-            new_status = advance_dispatch(session, dispatch_id)
+            new_status = advance_dispatch(session, dispatch_id, expected=mav_previous)
     except InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

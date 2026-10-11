@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 
 from app.core.queue import DispatchQueue, DispatchRequest
@@ -74,15 +75,32 @@ class WorkerPool:
         logger.info("worker pool started  size=%d", self._size)
 
     def stop(self, timeout: float = 10.0) -> None:
-        """Signal shutdown, let workers drain, then join them."""
+        """Finish the queued work, then stop the workers.
+
+        Closing the queue stops new work coming in and wakes every idle
+        worker. The workers keep taking requests until the queue is empty and
+        only then exit, so a call that was already accepted is still
+        dispatched. `timeout` is the total time allowed for that. If it runs
+        out, each worker finishes the call it is on and stops; the calls still
+        queued stay recorded in the database and are picked up again the next
+        time the server starts (see recover_unfinished_incidents).
+        """
         if not self._threads:
             return
-        self._stopping.set()
-        # Closing the queue wakes every worker blocked in get(), so shutdown
-        # does not have to wait for the poll timeout to expire.
         self._queue.close()
+        mav_deadline = time.monotonic() + timeout
         for mav_thread in self._threads:
-            mav_thread.join(timeout=timeout)
+            mav_thread.join(timeout=max(0.0, mav_deadline - time.monotonic()))
+
+        if any(t.is_alive() for t in self._threads):
+            self._stopping.set()  # out of time: finish the current call only
+            for mav_thread in self._threads:
+                mav_thread.join(timeout=POLL_TIMEOUT_SECONDS * 4)
+            logger.warning(
+                "stopped with %d call(s) still queued; they will be dispatched "
+                "at the next start",
+                self._queue.depth,
+            )
         mav_alive = [t.name for t in self._threads if t.is_alive()]
         if mav_alive:
             logger.warning("workers did not exit cleanly: %s", ", ".join(mav_alive))

@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     # "standard travel times" assumption.
     avg_speed_kmph: float = 32.0
 
+    # The longest this application waits for a row lock, in seconds. MySQL's
+    # own default is 50, which let one lock left open by another session hold
+    # every worker thread for almost a minute. Normal lock waits here are well
+    # under half a second.
+    lock_wait_timeout_seconds: int = 3
+
     # Deduplication gate (app/core/dedup.py). When off, every call becomes its
     # own incident. That is the unsafe baseline the dedup benchmark compares
     # against, in the same way LOCKING_MODE=none is the baseline for locking.
@@ -46,6 +52,22 @@ class Settings(BaseSettings):
     # Number of worker threads draining the dispatch queue. Allocation work is
     # I/O-bound on database waits, so threads genuinely overlap despite the GIL.
     worker_pool_size: int = 4
+
+    # --- Service area -------------------------------------------------------
+    # The project covers one city. A call from outside this box is refused at
+    # intake: without the check, a wrong coordinate sent an ambulance on a trip
+    # of thousands of kilometres and took it out of service for days. The box
+    # covers Dehradun and the towns where its ambulances are stationed.
+    service_area_lat_min: float = 30.10
+    service_area_lat_max: float = 30.50
+    service_area_lon_min: float = 77.75
+    service_area_lon_max: float = 78.25
+
+    def in_service_area(self, lat: float, lon: float) -> bool:
+        return (
+            self.service_area_lat_min <= lat <= self.service_area_lat_max
+            and self.service_area_lon_min <= lon <= self.service_area_lon_max
+        )
 
     # --- Simulation clock ---------------------------------------------------
     # Advances active dispatches through their lifecycle so vehicles return to

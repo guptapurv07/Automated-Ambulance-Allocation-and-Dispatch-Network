@@ -120,6 +120,9 @@ def run_mode(mode: str, calls: int, workers: int, race_window: float,
         # close together. The deduplication gate would merge them, so it is
         # switched off here; bench/dedup.py measures that gate on its own.
         "DEDUP_ENABLED": "false",
+        # MySQL's own lock wait, so that `for_update` here means "always wait"
+        # and the mode being measured is never switched part-way through.
+        "LOCK_WAIT_TIMEOUT_SECONDS": "50",
     }
     mav_proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app",

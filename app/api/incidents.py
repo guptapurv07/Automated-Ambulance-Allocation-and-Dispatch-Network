@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.core.dedup import register_report
+from app.core.queue import QueueClosed
 from app.core.runtime import dispatch_queue
 from app.core.scheduling import fleet_positions, make_request
 from app.db import get_session
@@ -52,6 +53,20 @@ def report_incident(
     settings: Settings = Depends(get_settings),
 ) -> IncidentAccepted:
     """Accept an emergency call and queue it for allocation."""
+    if not settings.in_service_area(payload.lat, payload.lon):
+        logger.warning(
+            "call refused: (%.4f, %.4f) is outside the service area",
+            payload.lat,
+            payload.lon,
+        )
+        raise HTTPException(
+            status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "This location is outside the service area (Dehradun), so no "
+                "ambulance can be sent from here. Check the coordinates."
+            ),
+        )
+
     # The gate commits before returning: the emergency is on record even if
     # allocation later fails, and the worker needs a row it can load by id.
     incident, mav_duplicate = register_report(
@@ -64,6 +79,19 @@ def report_incident(
         description=payload.description,
         dedup_enabled=settings.dedup_enabled,
     )
+
+    # The queue entry carries the call's deadline and expected travel time,
+    # which is what the scheduler orders by.
+    mav_request = None
+    if not mav_duplicate:
+        mav_request = make_request(incident, fleet_positions(session), settings)
+
+    # All database work for this call is done, so the connection goes back to
+    # the pool now. Waiting for the framework to clean the request up is not
+    # safe under load: that clean-up runs on the same threads that serve
+    # requests, so in a burst it queues behind the waiting calls, and the
+    # connections held until then are what run the pool dry.
+    session.close()
 
     if mav_duplicate:
         logger.info(
@@ -85,9 +113,18 @@ def report_incident(
             poll=f"/incidents/{incident.id}",
         )
 
-    # The queue entry carries the call's deadline and expected travel time,
-    # which is what the scheduler orders by.
-    dispatch_queue.put(make_request(incident, fleet_positions(session), settings))
+    try:
+        dispatch_queue.put(mav_request)
+    except QueueClosed:
+        # The server is shutting down. The call is already stored, and it is
+        # put back on the queue when the server next starts.
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                f"The service is shutting down. Call {incident.id} is recorded "
+                "and will be dispatched when the service is back."
+            ),
+        ) from None
 
     logger.info(
         "incident=%s QUEUED type=%s severity=%s at (%.5f, %.5f)  queue_depth=%d",

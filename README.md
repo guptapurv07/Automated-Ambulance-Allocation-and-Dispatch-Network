@@ -5,212 +5,303 @@
 
 ---
 
-##  Project Overview & Core Idea
+## Project Overview
 
-When an emergency occurs in a public space, multiple bystanders dial 108/112 at the same
-moment, and multiple unrelated emergencies compete for the same nearby vehicles. Standard
-dispatch systems handle these requests sequentially or without proper isolation, which
-corrupts allocation state under load.
+When an emergency happens in public, several bystanders call 108/112 at the same moment,
+and unrelated emergencies compete for the same nearby ambulances. A dispatch system that
+handles these requests without proper concurrency control sends several ambulances to one
+patient, or gives one ambulance to two patients.
 
-This project builds a **concurrency-safe dispatch network**: a Reinforcement Learning
-decision engine for *which* ambulance to send, wrapped in operating-system-level thread
-management and database-level row locking that guarantee the decision is executed exactly
-once, even when dozens of calls arrive simultaneously.
+This project is a dispatch backend built to stay correct under that load. It combines
+operating-system concepts (threads, a producer-consumer queue, synchronisation, scheduling)
+with database concepts (transactions, row-level locking, isolation, constraints), and it
+measures the effect of each one with a benchmark.
 
-The central claim is that intelligent routing is only useful if the allocation underneath
-it is safe. Existing research projects optimise the route and ignore the concurrency; this
-project supplies the missing OS and DBMS layer.
+A Reinforcement Learning model for choosing which ambulance to send is the next part of the
+project. The allocator is built so that the model only has to rank candidates; the locking
+underneath stays the same.
+
+## Current Status
+
+| Part | Status |
+|---|---|
+| FastAPI intake, MySQL schema, seed data | Built |
+| Two-phase allocation with row-level locking | Built |
+| Ambulance lifecycle and simulation clock | Built |
+| Own queue and worker thread pool | Built |
+| Duplicate call check | Built |
+| Retry of calls that found no ambulance | Built |
+| FIFO, priority and Least Laxity First scheduling | Built |
+| Benchmarks for locking, duplicates and scheduling | Built |
+| Reinforcement Learning ranking policy | In progress |
+| Dashboard (React, Leaflet map) | Planned |
+| Redis, Docker, deployment on AWS | Planned |
 
 ---
 
-##  The Problem: Two Distinct Race Conditions
+## The Problem: Two Different Race Conditions
 
-A key design insight of this project is that emergency dispatch contains **two different
-concurrency failures**, which require **two different mechanisms**. Treating them as one
-problem is why naive systems still misallocate vehicles even when they use transactions.
+Emergency dispatch contains two different concurrency failures, and they need two
+different mechanisms. Treating them as one problem is why a system can use transactions
+correctly and still misallocate ambulances.
 
-### Problem A — Duplicate Incident Reports
+### Problem A: Duplicate Reports
 
 > *One accident. Five bystanders call within thirty seconds.*
 
-Each call creates its own incident record, each is assigned a *different* ambulance, and
-every database transaction commits correctly. The data is perfectly consistent — and three
-ambulances are dispatched to one patient while another neighbourhood goes uncovered.
+Each call creates its own incident and each incident gets a different ambulance. Every
+transaction commits correctly and the data is consistent, yet several ambulances go to one
+patient while another area is left uncovered. Row-level locking does not help here.
 
-Row-level locking does **not** solve this. This is a **deduplication / idempotency**
-problem, solved by an atomic test-and-set on a derived key of
-`(geo_cell, time_bucket, incident_type)` — enforced by a unique index, with Redis `SETNX`
-as the fast path. The second caller's report is folded into the existing incident instead
-of creating a new dispatch.
+The duplicate check solves it. Every incident stores a key built from its grid cell, its
+time window and its type. A new report is a duplicate when an incident of the same
+type exists in the same or a neighbouring cell (about 100 m), in the current or previous
+2-minute window. A duplicate is counted on the existing incident and no second ambulance is
+sent. The check is protected by a mutex, and a `UNIQUE` index on the key makes MySQL itself
+refuse a second incident for the same emergency.
 
-### Problem B — Contended Allocation
+### Problem B: Contended Allocation
 
-> *Two unrelated emergencies across town. Both are nearest to ambulance `DDN-07`.*
+> *Two unrelated emergencies. Both are nearest to ambulance `DDN-07`.*
 
-Two worker threads both read `DDN-07` as `AVAILABLE`, both write `ASSIGNED`. This is the
-classic lost-update race — two processes inside the same critical section — and it is
-solved exactly as intended by **MySQL InnoDB row-level locking**: `SELECT ... FOR UPDATE`
-forces the second thread to wait and re-evaluate against committed state.
+Two worker threads both read `DDN-07` as `AVAILABLE` and both write `ASSIGNED`. This is the
+lost update problem: two threads inside the same critical section. It is solved with InnoDB
+row-level locking. `SELECT ... FOR UPDATE` makes the second transaction wait, and after the
+lock is granted the status is checked again.
 
 Problem A is mutual exclusion enforced by a **unique constraint**.
 Problem B is mutual exclusion enforced by a **row lock**.
-The system implements both.
 
 ---
 
-##  System Workflow & Architecture
+## System Workflow
 
 ```
-                         Simulated 108/112 calls
+                         Emergency call (HTTP JSON)
                                     │
                                     ▼
                      ┌──────────────────────────┐
-                     │     FastAPI Intake       │  async · validates · returns
-                     │                          │  202 Accepted + incident_id
+                     │      FastAPI Intake      │  validates, replies 202 at once
                      └────────────┬─────────────┘
-                                  │
                                   ▼
                      ┌──────────────────────────┐
-                     │   Deduplication Gate     │  atomic test-and-set
-                     │                          │  collapses repeat calls  (Problem A)
+                     │     Duplicate Check      │  mutex + UNIQUE key   (Problem A)
                      └────────────┬─────────────┘
-                                  │
                                   ▼
                      ┌──────────────────────────┐
-                     │      Custom Queue        │  hand-built, condition-variable
-                     │                          │  FIFO / priority / Least-Laxity-First
+                     │        Own Queue         │  condition variable
+                     │                          │  FIFO / priority / LLF
                      └────────────┬─────────────┘
-                                  │
                    ┌──────────────┼──────────────┐
                    ▼              ▼              ▼
-               worker-1       worker-2       worker-n     custom thread pool
+               worker-1       worker-2  ...  worker-n      own thread pool
                    └──────────────┼──────────────┘
-                                  │
                                   ▼
                      ┌──────────────────────────┐
-                     │     Decision Engine      │  RL policy ranks candidate
-                     │                          │  ambulances — OUTSIDE the txn
+                     │         Ranking          │  nearest free ambulances first,
+                     │                          │  no lock held (RL will plug in here)
                      └────────────┬─────────────┘
-                                  │
                                   ▼
                      ┌──────────────────────────┐
-                     │     Allocation Txn       │  SELECT ... FOR UPDATE
-                     │     MySQL InnoDB         │  verify · assign · COMMIT  (Problem B)
+                     │  Allocation Transaction  │  SELECT ... FOR UPDATE,
+                     │      MySQL InnoDB        │  check again, assign   (Problem B)
                      └────────────┬─────────────┘
-                                  │
                                   ▼
-                          Dispatch record written
-                          Ambulance state advances
+                     ┌──────────────────────────┐
+                     │     Simulation Clock     │  en route, at scene, nearest
+                     │                          │  hospital, free again; retries
+                     │                          │  calls that are still waiting
+                     └──────────────────────────┘
 ```
 
-### Pipeline stages
-
-1. **FastAPI Intake** — receives parallel emergency reports, validates them, persists the
-   incident and immediately returns `202 Accepted` with an incident ID. The HTTP thread is
-   never blocked by allocation work.
-2. **Deduplication Gate** — an atomic test-and-set collapses repeat reports of the same
-   event into a single incident, preventing redundant dispatch (Problem A).
-3. **Custom Queue** — a hand-built thread-safe queue guarded by a condition variable, with
-   a pluggable scheduling policy. Emergency calls carry severity-derived response deadlines,
-   making **Least Laxity First** a natural scheduling discipline to evaluate against plain
-   FIFO and static priority.
-4. **Custom Worker Thread Pool** — a fixed set of worker threads consumes the queue. Because
-   allocation work is I/O-bound on database waits, threads genuinely overlap despite the GIL.
-   Each worker holds its **own database connection**; sessions are never shared across threads.
-5. **Decision Engine** — the policy evaluates a snapshot of available vehicles and returns a
-   **ranked list** of candidates, not a single pick. Inference runs *outside* the transaction
-   so row locks are never held across a model forward pass.
-6. **Allocation Transaction** — a short transaction locks candidate rows with
-   `SELECT ... FOR UPDATE`, re-verifies availability against committed state, writes the
-   dispatch and commits. If the top-ranked vehicle was taken, the worker falls through to the
-   next candidate. **The policy proposes; the lock disposes.**
-7. **Caching & Cloud** — Redis backs the deduplication key and caches hot vehicle lookups.
-   The stack deploys to AWS (EC2 for the application, RDS for the database).
+1. **Intake.** `POST /incidents` validates the call and returns `202 Accepted` with an
+   incident id. It does not wait for an ambulance to be chosen.
+2. **Duplicate check.** A repeat report is added to the existing incident and is not queued.
+3. **Queue.** A thread-safe queue written for this project on `threading.Condition`. A
+   scheduler decides which waiting call a free worker takes next.
+4. **Worker thread pool.** A fixed set of threads takes calls from the queue. Each thread
+   uses its own database session.
+5. **Ranking.** The free ambulances are ranked by distance without holding any lock. The
+   ranking returns a list, not a single choice.
+6. **Allocation transaction.** The top five candidates are locked in ascending id order,
+   their status is checked again, the nearest one still free is assigned, and the
+   transaction commits. *The ranking proposes; the lock disposes.*
+7. **Lifecycle.** A clock thread moves each ambulance through its call. The patient is taken
+   to the hospital nearest to the incident, and the ambulance then becomes free. A call that
+   found no ambulance is put back on the queue when one becomes free.
 
 ---
 
-##  Concurrency Design
+## Concurrency Design
 
-### Operating-System Layer
+### Operating System Concepts
 
-| Concern | Mechanism |
+| Concept | Where it is used |
 |---|---|
-| Producer/consumer buffering | Custom queue built on `threading.Condition` |
-| Parallel request handling | Custom worker thread pool with graceful shutdown |
-| Critical section | Allocation transaction, entered by one worker per vehicle |
-| Scheduling | Pluggable — FIFO, static priority, Least Laxity First |
-| Starvation control | Deadline-aware ordering so low-severity calls still drain |
+| Multithreading, thread pool | `app/core/pool.py`: worker threads created and stopped by the application |
+| Producer-consumer | Intake puts calls on the queue; workers take them off (`app/core/queue.py`) |
+| Condition variable | The queue's `wait` and `notify` |
+| Mutex | Around the duplicate check (`app/core/dedup.py`) and the pool counters |
+| Critical section, race condition | The allocation transaction; shown with locking switched off in the benchmark |
+| Deadlock prevention and recovery | Rows are always locked in ascending id order, so no circular wait can form. If MySQL still reports a deadlock, the call is tried again without waiting for locks |
+| Scheduling | FIFO, priority, and Least Laxity First with a response deadline per severity |
 
-### Database Layer
+### Database Concepts
 
-| Concern | Mechanism |
+| Concept | Where it is used |
 |---|---|
-| Lost update on a vehicle | `SELECT ... FOR UPDATE` on candidate ambulance rows |
-| Non-blocking contention | `SELECT ... FOR UPDATE SKIP LOCKED` to claim an uncontended vehicle |
-| Deadlock prevention | Total ordering — candidate rows always locked in ascending ID order |
-| Duplicate incidents | Unique index on the derived deduplication key |
-| Isolation | `READ COMMITTED`, to avoid unnecessary gap locking under `REPEATABLE READ` |
-| Lock scope | Transactions kept short; no inference or network I/O inside them |
+| Transactions | Assigning an ambulance is one transaction: all of it happens or none of it |
+| Row-level locking | `SELECT ... FOR UPDATE` on candidate ambulance rows; `SKIP LOCKED` as an alternative |
+| Isolation level | `READ COMMITTED`, to avoid the gap locks of `REPEATABLE READ` |
+| Unique constraints | One dispatch per incident; one incident per emergency (the duplicate key) |
+| Foreign keys | A dispatch references its incident, ambulance and hospital |
+| Atomic update | The report counter is increased inside one `UPDATE` statement |
+| Indexing | Status columns, report time and foreign keys are indexed, so the lookups that run every second read only the rows they need |
 
-A configurable locking mode (`none` / `for_update` / `skip_locked`) lets the safe path be
-measured directly against an unsafe baseline, which is how the project demonstrates that the
-locking actually prevents misallocation rather than merely asserting it.
+Each mechanism can be switched off with a setting, so the safe version is measured against
+an unsafe one and not only described.
+
+### When Something Goes Wrong
+
+A call that has been accepted is never dropped.
+
+* **A row lock that is not released.** The application waits at most 3 seconds for a row
+  lock (MySQL's default is 50). If the wait fails, the call takes the nearest ambulance
+  whose row is not locked, and for the next 30 seconds other calls do the same, so one
+  stuck row cannot hold up the whole fleet.
+* **Any other failure while a call is being handled.** The call goes back on the waiting
+  list and is retried.
+* **Server stop.** The workers finish the calls already in the queue before they stop.
+* **Server crash.** A call that was accepted but not dispatched is still recorded in the
+  database, and it is put back on the queue at the next start.
+* **Lifecycle steps.** A step is decided only on data read after the row lock is held, so
+  a manual step and the clock cannot both act on the same old state.
 
 ---
 
-##  Data Model
+## Data Model
 
-| Table | Purpose |
+| Table | Holds |
 |---|---|
-| `ambulances` | Vehicle registry — call sign, base, live coordinates, status |
-| `hospitals` | Receiving facilities with coordinates and capacity |
-| `incidents` | Emergency reports — location, severity, dedup key, status |
-| `dispatches` | The allocation record joining an incident to an ambulance |
+| `ambulances` | Call sign, station, base and current position, status |
+| `hospitals` | Name, position, bed capacity |
+| `incidents` | Position, type, severity, status, report time, duplicate key, report count |
+| `dispatches` | The incident, the ambulance and the hospital of one call, with times, distance and ETA |
 
-**Ambulance lifecycle:**
+Relationships: one ambulance has many dispatches; one incident has at most one dispatch;
+one hospital receives many dispatches. The ER diagram is in [`docs/ER_Diagram.pdf`](docs/ER_Diagram.pdf).
+
+**Ambulance lifecycle**
 
 ```
 AVAILABLE → ASSIGNED → EN_ROUTE → AT_SCENE → TRANSPORTING → AT_HOSPITAL → AVAILABLE
 ```
 
-This state machine is the unit of contention that locking protects, and it defines the
-state and reward space for the Reinforcement Learning policy.
+---
+
+## Results
+
+All three benchmarks run against a freshly seeded MySQL database with 12 ambulances.
+Numbers change slightly from run to run because threads are timed by the operating system.
+
+### Row-level locking
+
+40 calls at the same instant, 8 worker threads.
+
+| Locking mode | Dispatches | Different ambulances used | Double-booked |
+|---|---|---|---|
+| none | 40 | 7 | 6 |
+| `FOR UPDATE` | 12 | 12 | 0 |
+| `FOR UPDATE SKIP LOCKED` | 7 | 7 | 0 |
+
+Without locking, 40 calls were "served" by 7 ambulances. With `FOR UPDATE` all 12 ambulances
+were used once each and the other 28 calls waited. `SKIP LOCKED` never waits for a lock, but
+it leaves some ambulances unused because a thread skips any row another thread holds.
+
+### Duplicate check
+
+6 accidents, each reported by 5 callers at the same instant.
+
+| Duplicate check | Reports | Incidents | Ambulances sent | Unnecessary | Left free |
+|---|---|---|---|---|---|
+| off | 30 | 30 | 12 | 6 | 0 |
+| on | 30 | 6 | 6 | 0 | 6 |
+
+With 8 accidents and 10 callers each, the run without the check also left 2 accidents with
+no ambulance at all.
+
+### Scheduling
+
+48 calls of mixed severity over 60 simulated minutes, so calls have to wait.
+Average wait for an ambulance, in minutes:
+
+| Scheduler | CRITICAL | HIGH | MEDIUM | LOW |
+|---|---|---|---|---|
+| FIFO | 16.7 | 16.7 | 19.4 | 22.2 |
+| Priority | 3.4 | 9.9 | 24.9 | 36.4 |
+| Least Laxity First | 5.0 | 11.0 | 24.9 | 40.2 |
+
+Priority and Least Laxity First cut the wait for CRITICAL calls from about 17 minutes to
+3 to 5, and LOW calls pay for it. At a moderate load (36 calls) they also reduce the number
+of late calls from 13 to 10. When the system is overloaded (48 calls) the number of late
+calls rises from 26 to 30 and 33, because MEDIUM and LOW calls miss their targets. Priority
+and Least Laxity First gave almost the same result in these runs.
+
+The 8-minute target for CRITICAL calls is missed in most cases under every scheduler,
+because the drive alone takes 9 to 10 minutes on average. That depends on which ambulance
+is sent, which is the part the Reinforcement Learning model is meant to improve.
 
 ---
 
-##  Technology Stack
+## Technology Stack
 
-* **Backend Framework:** Python 3.13, FastAPI, Uvicorn
-* **ORM / DB Driver:** SQLAlchemy 2.x, PyMySQL
-* **Database Engine:** MySQL 8+ (InnoDB, for row-level locking)
-* **Concurrency:** Custom queue and worker thread pool built on `threading`
-* **High-Speed Caching:** Redis
-* **AI/ML Logic:** Reinforcement Learning decision engine
-* **Frontend:** React, Vite, TypeScript, Tailwind CSS, Leaflet (OpenStreetMap)
-* **Cloud Infrastructure:** AWS — EC2 for the application server, RDS for the database
+* **Backend:** Python 3.13, FastAPI, Uvicorn, Pydantic
+* **Database:** MySQL 8 or newer (InnoDB), SQLAlchemy 2, PyMySQL
+* **Concurrency:** Python `threading` (own queue and worker thread pool)
+* **Planned:** Reinforcement Learning policy; React, Vite, TypeScript, Tailwind and Leaflet
+  for the dashboard; Redis; Docker; AWS (EC2 and RDS)
 
 ---
 
-##  Project Structure
+## Project Structure
 
 ```
 app/
-  main.py            FastAPI application and lifecycle
-  config.py          Environment-driven settings
-  db.py              Engine and per-thread session management
-  models.py          SQLAlchemy ORM models
-  schemas.py         Pydantic request/response schemas
-  api/               HTTP route handlers
-  core/              Queue, thread pool, dispatcher, locking
-  policy/            Decision-engine interface and implementations
+  main.py              FastAPI application; starts and stops the worker pool and the clock
+  config.py            Settings read from .env
+  db.py                Engine, connection pool, one session per thread
+  models.py            Tables and status types
+  schemas.py           Request and response shapes
+  geo.py               Distance and travel time
+  api/
+    incidents.py       Intake (POST /incidents) and incident lookup
+    ambulances.py      Fleet listing
+    dispatches.py      Dispatch listing and manual lifecycle steps
+    queue.py           Live queue, worker and clock statistics
+    health.py          Health check
+  core/
+    dedup.py           Duplicate check                      (Problem A)
+    queue.py           Thread-safe queue and the three schedulers
+    scheduling.py      Response deadlines and laxity
+    pool.py            Worker thread pool
+    dispatcher.py      The worker's job, and the retry of waiting calls
+    allocation.py      Two-phase allocation with row locks  (Problem B)
+    lifecycle.py       Ambulance state machine and hospital choice
+    runtime.py         The shared queue, pool and clock
+  policy/              Reserved for the Reinforcement Learning ranking policy
 sim/
-  seed.py            Reference data for the simulated service area
-frontend/            Operations dashboard
+  seed.py              Creates the database and loads ambulances and hospitals
+  clock.py             Simulation clock thread
+bench/
+  loadtest.py          Locking benchmark
+  dedup.py             Duplicate check benchmark
+  scheduling.py        Scheduler benchmark
+docs/                  ER diagram and concept notes
 ```
 
 ---
 
-##  Local Setup & Installation
+## Local Setup
 
 ### Prerequisites
 
@@ -218,7 +309,7 @@ frontend/            Operations dashboard
 * MySQL Server 8.0 or higher, running locally
 * Git
 
-### Installation Steps
+### Installation
 
 1. **Clone the repository**
    ```bash
@@ -229,62 +320,165 @@ frontend/            Operations dashboard
 2. **Create and activate a virtual environment**
    ```bash
    python3 -m venv venv
-   source venv/bin/activate        # Windows: venv\Scripts\activate
+   source venv/bin/activate
    ```
+   On Windows use `venv\Scripts\activate`.
 
 3. **Install dependencies**
    ```bash
    pip install -r requirements.txt
    ```
 
-4. **Create the database**
-   ```bash
-   mysql -u root -e "CREATE DATABASE IF NOT EXISTS ambulance_dispatch;"
-   ```
-
-5. **Configure the environment**
+4. **Configure the environment**
    ```bash
    cp .env.example .env
    ```
-   Edit `.env` if your MySQL credentials differ from the defaults.
+   Open `.env` and set `DB_PASSWORD` to your MySQL password. This file is not committed.
 
-6. **Seed the reference data**
+5. **Create the database and load the data**
    ```bash
    python -m sim.seed
    ```
+   This creates the `ambulance_dispatch` database, its tables, 12 ambulances and 4 hospitals.
 
-7. **Run the server**
+6. **Run the server**
    ```bash
    uvicorn app.main:app --reload
    ```
+   Interactive API documentation is at **http://127.0.0.1:8000/docs**.
 
-   Interactive API documentation is served at **http://127.0.0.1:8000/docs**.
+After pulling changes that alter the tables, rebuild the database with
+`python -m sim.seed --reset`.
+
+### Settings
+
+All settings live in `.env`. The most useful ones:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `LOCKING_MODE` | `for_update` | `none`, `for_update` or `skip_locked` |
+| `QUEUE_SCHEDULER` | `llf` | `fifo`, `priority` or `llf` |
+| `DEDUP_ENABLED` | `true` | Switch the duplicate check on or off |
+| `WORKER_POOL_SIZE` | `4` | Number of worker threads |
+| `SIM_CLOCK_ENABLED` | `true` | Move ambulances through their calls automatically |
+| `SIM_TIME_SCALE` | `60` | Simulated minutes per real minute |
+| `LOCK_WAIT_TIMEOUT_SECONDS` | `3` | Longest wait for a row lock |
+| `AVG_SPEED_KMPH` | `32` | Average ambulance speed used for travel times |
 
 ---
 
-##  API Reference
+## API Reference
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/health` | Service and database connectivity check |
-| `GET` | `/ambulances` | List all ambulances with live status |
-| `POST` | `/incidents` | Report an emergency and allocate an ambulance |
-| `GET` | `/incidents/{id}` | Retrieve a single incident and its dispatch |
-| `GET` | `/dispatches` | List all allocation records |
+| `POST` | `/incidents` | Report an emergency. Replies `202` with an incident id, or says it is a duplicate |
+| `GET` | `/incidents/{id}` | The incident with its dispatch, ambulance and hospital |
+| `GET` | `/ambulances` | The fleet with position and status; filter with `?status=`, page with `?limit=` and `?offset=` |
+| `GET` | `/dispatches` | Dispatch records, newest first, 100 per page; filter with `?status=`, page with `?limit=` and `?offset=` |
+| `POST` | `/dispatches/{id}/advance` | Move a dispatch forward by one lifecycle step |
+| `POST` | `/dispatches/{id}/complete` | Finish a dispatch and free its ambulance |
+| `GET` | `/queue` | Queue depth, scheduler, worker counters and clock state |
+| `GET` | `/health` | Service and database check |
+
+A call needs `lat` and `lon`. Optional fields are `severity` (`CRITICAL`, `HIGH`, `MEDIUM`,
+`LOW`), `incident_type` (`ROAD_ACCIDENT`, `CARDIAC`, `BREATHING`, `INJURY`, `FIRE`,
+`PREGNANCY`, `OTHER`), `caller_phone` and `description`.
 
 ---
 
-##  Assumptions
+## Running the Demonstrations
 
-* Emergency calls are **simulated**; the system does not connect to a live 108/112 feed.
-* Coverage is limited to a **single city service area** (Dehradun), not a state or country.
-* Travel times are computed from **standard average speeds** over great-circle distance,
-  rather than a paid live-traffic API.
-* Development and testing run locally before deployment to AWS.
+Start the server first, unless a step says otherwise.
+
+### 1. One call from start to finish
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/incidents -H "Content-Type: application/json" -d '{"lat":30.2740,"lon":78.0480,"severity":"CRITICAL","incident_type":"ROAD_ACCIDENT","description":"Accident on Haridwar Bypass"}'
+```
+
+```bash
+curl -s http://127.0.0.1:8000/incidents/1
+```
+
+The first reply comes back at once. The second shows the ambulance that was assigned and,
+after about 15 seconds, the hospital. The server terminal prints each step of the trip.
+The ambulance is free again after about 30 seconds.
+
+### 2. Several callers, one incident
+
+Send the first command above two more times straight away, while the first call is still
+in progress. Each reply says `"duplicate": true` and the report count goes up, but no new
+ambulance is sent.
+
+### 3. The row lock in MySQL
+
+Open two MySQL sessions on `ambulance_dispatch`.
+
+Session 1:
+```sql
+START TRANSACTION;
+SELECT id, call_sign, status FROM ambulances WHERE id = 7 FOR UPDATE;
+```
+
+Session 2:
+```sql
+SELECT id, call_sign, status FROM ambulances WHERE id = 7 FOR UPDATE NOWAIT;
+SELECT id, call_sign, status FROM ambulances WHERE id IN (6,7,8) FOR UPDATE SKIP LOCKED;
+SELECT OBJECT_NAME, LOCK_TYPE, LOCK_MODE, LOCK_STATUS, LOCK_DATA FROM performance_schema.data_locks;
+```
+
+Session 2 gets an error for the first query, only ambulances 6 and 8 for the second, and
+sees the exclusive row lock on row 7 in the third. Finish with `ROLLBACK;` in session 1 and
+close both sessions. A session left open with an unfinished transaction blocks the database
+reset.
+
+### 4. The benchmarks
+
+Stop the server before running these. Each one starts its own server and resets the
+database. Keep the computer awake while they run, because times are measured on the real
+clock.
+
+```bash
+python -m bench.loadtest
+python -m bench.dedup
+python -m bench.scheduling
+```
+
+They print the tables shown under Results.
 
 ---
 
-##  Team
+## Assumptions and Limits
+
+* Emergency calls are simulated; the system is not connected to a live 108/112 feed.
+* The service area is a single city, Dehradun.
+* Travel time is straight-line distance at an average speed, not live traffic.
+* Time is compressed: one simulated minute passes each real second by default.
+* Two reports are merged only if the callers choose the same incident type. A repeat report
+  can raise the severity of the incident and adds its description; once the ambulance has
+  left with the patient, a call from the same place is treated as a new incident.
+* Calls from outside the service area (a box around Dehradun, set in `.env`) are refused.
+* The patient goes to the nearest hospital; bed capacity is stored but not yet used.
+* After a call the ambulance waits at the hospital; it does not drive back to its station.
+* A dispatch cannot be cancelled once it has been made.
+* Waiting calls are retried by the simulation clock, so the clock must be running.
+* The system runs as one server process. The queue and the duplicate check's lock are in
+  memory, so running several servers side by side needs Redis first.
+* Tested with bursts of 3000 calls and with 1000 ambulances and 200,000 past calls in the
+  tables. The simulation clock keeps its pace up to about 100 ambulances on calls at once
+  at the default 60x speed; with more than that it falls behind.
+
+---
+
+## Documents
+
+* [`docs/ER_Diagram.pdf`](docs/ER_Diagram.pdf): ER diagram of the database
+* [`docs/OS_Concepts_Used.docx`](docs/OS_Concepts_Used.docx): operating system concepts used in the project
+* [`docs/Deadlock_Prevention_Simple.docx`](docs/Deadlock_Prevention_Simple.docx): how deadlocks are prevented
+
+---
+
+## Team
 
 | Role | Name | Student ID |
 |---|---|---|

@@ -12,16 +12,25 @@ It also holds the retry path. An incident that finds no vehicle is recorded as
 UNASSIGNED; `requeue_waiting_incidents` puts such incidents back on the queue
 once vehicles are free again, so a call made during a busy spell is served late
 rather than never.
+
+One rule runs through this module: a call that has been accepted is never left
+in limbo. If handling it fails for any reason it goes back on the waiting
+list, and a call that was still queued when the server stopped is queued again
+at the next start.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.core.allocation import NoAmbulanceAvailable, allocate_ambulance
 from app.core.queue import DispatchQueue, DispatchRequest
 from app.core.scheduling import (
@@ -31,16 +40,44 @@ from app.core.scheduling import (
     response_minutes,
 )
 from app.db import session_scope
-from app.models import Incident, IncidentStatus
+from app.models import Dispatch, Incident, IncidentStatus
 
 logger = logging.getLogger("dispatch.worker")
+
+# MySQL's error numbers for "the row lock could not be had": the wait ran out,
+# or this transaction was picked as the victim of a deadlock.
+LOCK_WAIT_TIMEOUT = 1205
+DEADLOCK = 1213
+
+# After a row lock could not be had, allocation stops waiting for locks for
+# this long, so that the calls that follow are not each held up in turn by the
+# same stuck row. Then it goes back to normal and finds out whether the row has
+# been released.
+DEGRADED_SECONDS = 30.0
+_degraded_until = 0.0
+# While not waiting for locks, calls are allocated one at a time. Otherwise
+# several workers lock the same candidate rows at once, and all but one of
+# them come away with nothing.
+_degraded_lock = threading.Lock()
 
 
 def handle_dispatch_request(request: DispatchRequest) -> None:
     """Allocate a vehicle for one queued incident.
 
-    Opens its own session: this runs on a worker thread, and a SQLAlchemy
-    Session must never be shared across threads.
+    A call that reaches this point has been accepted, so it must not be lost.
+    Whatever goes wrong while handling it, it is put back on the waiting list,
+    where the retry picks it up, and the error is passed on to the pool.
+    """
+    try:
+        _dispatch(request)
+    except Exception:
+        _return_to_waiting(request.incident_id)
+        raise
+
+
+def _dispatch(request: DispatchRequest) -> None:
+    """The work itself. Opens its own session: this runs on a worker thread,
+    and a SQLAlchemy Session must never be shared across threads.
     """
     mav_queue_wait = request.waited_ms()
     mav_settings = get_settings()
@@ -72,7 +109,7 @@ def handle_dispatch_request(request: DispatchRequest) -> None:
         )
 
         try:
-            mav_dispatch = allocate_ambulance(mav_session, mav_incident, mav_settings)
+            mav_dispatch = _allocate_with_fallback(mav_session, mav_incident, mav_settings)
         except NoAmbulanceAvailable as exc:
             # Recorded as UNASSIGNED by the allocator. It is retried from
             # requeue_waiting_incidents once a vehicle is free.
@@ -97,6 +134,125 @@ def handle_dispatch_request(request: DispatchRequest) -> None:
             mav_target,
             "ON TIME" if mav_response <= mav_target else "LATE",
         )
+
+
+def _mysql_error_code(exc: OperationalError) -> int | None:
+    mav_args = getattr(exc.orig, "args", ())
+    return mav_args[0] if mav_args and isinstance(mav_args[0], int) else None
+
+
+def _allocate_with_fallback(
+    session: Session, incident: Incident, settings: Settings
+) -> Dispatch:
+    """Allocate a vehicle, without being held up by a row lock that is stuck.
+
+    The normal mode waits for locked rows, which lets every vehicle be used.
+    Two things can make that wait fail: the lock is not released in time
+    because another session is holding it, or MySQL picks this transaction as
+    the victim of a deadlock. Either way the transaction is gone and the call
+    is still unserved.
+
+    When that happens the dispatcher switches to a degraded mode for a short
+    while. In it, a call takes the nearest vehicle whose row is not locked
+    (SKIP LOCKED), which never waits and so cannot fail in the same way. The
+    stuck vehicle is simply passed over, and the rest of the fleet keeps
+    working.
+    """
+    global _degraded_until
+    mav_incident_id = incident.id
+
+    if time.monotonic() >= _degraded_until:
+        try:
+            return allocate_ambulance(session, incident, settings)
+        except OperationalError as exc:
+            mav_code = _mysql_error_code(exc)
+            if mav_code not in (LOCK_WAIT_TIMEOUT, DEADLOCK):
+                raise
+            session.rollback()
+            _degraded_until = time.monotonic() + DEGRADED_SECONDS
+            logger.warning(
+                "incident=%s could not get its row locks (%s); for the next "
+                "%.0fs vehicles are allocated without waiting for locked rows",
+                mav_incident_id,
+                "lock wait timed out" if mav_code == LOCK_WAIT_TIMEOUT else "deadlock",
+                DEGRADED_SECONDS,
+            )
+
+    with _degraded_lock:
+        return allocate_ambulance(
+            session,
+            incident,
+            settings.model_copy(update={"locking_mode": "skip_locked"}),
+        )
+
+
+def _return_to_waiting(incident_id: int) -> None:
+    """Put a call whose handling failed back on the waiting list.
+
+    Only a call that is still REPORTED is moved. One that already has a
+    vehicle, or is already waiting, is left exactly as it is.
+    """
+    try:
+        with session_scope() as mav_session:
+            mav_moved = mav_session.execute(
+                update(Incident)
+                .where(
+                    Incident.id == incident_id,
+                    Incident.status == IncidentStatus.REPORTED,
+                )
+                .values(status=IncidentStatus.UNASSIGNED)
+            ).rowcount
+            mav_session.commit()
+        if mav_moved:
+            logger.warning(
+                "incident=%s returned to the waiting list after a failed attempt",
+                incident_id,
+            )
+    except Exception:
+        # The database itself cannot be reached. The call stays REPORTED and
+        # is recovered the next time the server starts.
+        logger.exception(
+            "incident=%s could not be returned to the waiting list", incident_id
+        )
+
+
+def recover_unfinished_incidents(queue: DispatchQueue) -> int:
+    """Queue again the calls that were accepted but never dispatched.
+
+    Runs once at start-up. A call is REPORTED from the moment it is accepted
+    until a worker has dealt with it. If the server stopped or crashed in
+    between, the call is still REPORTED in the database, and nothing else
+    would ever look at it again.
+
+    Returns how many calls were recovered.
+    """
+    mav_settings = get_settings()
+    try:
+        with session_scope() as mav_session:
+            mav_pending = mav_session.execute(
+                select(Incident)
+                .where(Incident.status == IncidentStatus.REPORTED)
+                .order_by(Incident.reported_at, Incident.id)
+            ).scalars().all()
+            if not mav_pending:
+                return 0
+            mav_fleet = fleet_positions(mav_session)
+            mav_requests = [
+                make_request(mav_i, mav_fleet, mav_settings) for mav_i in mav_pending
+            ]
+    except Exception:
+        # Starting without the database is still allowed; /health reports it.
+        logger.exception("could not check for unfinished calls at start-up")
+        return 0
+
+    for mav_request in mav_requests:
+        queue.put(mav_request)
+    logger.warning(
+        "recovered %d call(s) that were accepted before the last shutdown "
+        "but not dispatched",
+        len(mav_requests),
+    )
+    return len(mav_requests)
 
 
 def requeue_waiting_incidents(queue: DispatchQueue) -> int:

@@ -144,7 +144,7 @@ class Incident(Base):
     # Deduplication, see app/core/dedup.py. The key is derived from this
     # incident's location, report time and type. The UNIQUE index is what makes
     # the database refuse a second incident for the same emergency. The key is
-    # cleared when the incident is resolved, so the same place can have a new
+    # cleared when the ambulance leaves the scene, so the same place can have a new
     # emergency later.
     dedup_key: Mapped[str | None] = mapped_column(
         String(64), unique=True, nullable=True
@@ -192,8 +192,11 @@ class Dispatch(Base):
     distance_km: Mapped[float] = mapped_column(Float)
     eta_minutes: Mapped[float] = mapped_column(Float)
 
+    # Indexed: the simulation clock looks up the ACTIVE dispatches every tick.
+    # They are a handful of rows among all the finished ones, and without an
+    # index that lookup reads the whole history each time.
     status: Mapped[DispatchStatus] = mapped_column(
-        Enum(DispatchStatus), default=DispatchStatus.ACTIVE
+        Enum(DispatchStatus), default=DispatchStatus.ACTIVE, index=True
     )
     incident: Mapped["Incident"] = relationship(back_populates="dispatch")
     ambulance: Mapped["Ambulance"] = relationship(back_populates="dispatches")

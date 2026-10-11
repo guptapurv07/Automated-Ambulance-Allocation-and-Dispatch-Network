@@ -25,6 +25,8 @@ import threading
 from datetime import datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import joinedload
 
 from app.config import Settings
 from app.core.dispatcher import requeue_waiting_incidents
@@ -35,7 +37,7 @@ from app.core.lifecycle import (
 )
 from app.core.queue import DispatchQueue
 from app.db import session_scope
-from app.models import Ambulance, Dispatch, DispatchStatus
+from app.models import Ambulance, AmbulanceStatus, Dispatch, DispatchStatus
 
 logger = logging.getLogger("dispatch.clock")
 
@@ -99,17 +101,22 @@ class SimulationClock:
         mav_now = datetime.now()
 
         with session_scope() as mav_session:
+            # One query for the whole tick: every active dispatch with its
+            # vehicle's status, its incident and its hospital. Fetching those
+            # one dispatch at a time costs a round trip per vehicle on a call,
+            # which makes the clock run slow as the fleet grows.
             mav_active = mav_session.execute(
-                select(Dispatch).where(Dispatch.status == DispatchStatus.ACTIVE)
-            ).scalars().all()
+                select(Dispatch, Ambulance.status)
+                .join(Ambulance, Ambulance.id == Dispatch.ambulance_id)
+                .where(Dispatch.status == DispatchStatus.ACTIVE)
+                .options(joinedload(Dispatch.incident), joinedload(Dispatch.hospital))
+            ).all()
 
-            mav_due: list[int] = []
-            for mav_dispatch in mav_active:
-                mav_ambulance = mav_session.get(Ambulance, mav_dispatch.ambulance_id)
-                if mav_ambulance is None:
-                    continue
+            # Each due dispatch with the status it was seen in.
+            mav_due: list[tuple[int, AmbulanceStatus]] = []
+            for mav_dispatch, mav_status in mav_active:
                 mav_required_minutes = phase_duration_minutes(
-                    mav_ambulance.status,
+                    mav_status,
                     mav_dispatch,
                     self._settings.avg_speed_kmph,
                 )
@@ -117,14 +124,26 @@ class SimulationClock:
                 mav_required_seconds = (mav_required_minutes * 60.0) / mav_scale
                 mav_elapsed_seconds = (mav_now - mav_dispatch.phase_started_at).total_seconds()
                 if mav_elapsed_seconds >= mav_required_seconds:
-                    mav_due.append(mav_dispatch.id)
+                    mav_due.append((mav_dispatch.id, mav_status))
 
-            for mav_dispatch_id in mav_due:
+            for mav_dispatch_id, mav_seen in mav_due:
                 try:
-                    advance_dispatch(mav_session, mav_dispatch_id)
+                    # `expected` makes the step conditional on what was seen
+                    # above. If something else advanced this dispatch in the
+                    # meantime, it is left alone until it is due again.
+                    advance_dispatch(mav_session, mav_dispatch_id, expected=mav_seen)
                     self._transitions += 1
                 except InvalidTransition as exc:
                     logger.warning("dispatch=%s skipped: %s", mav_dispatch_id, exc)
+                except OperationalError as exc:
+                    # The vehicle's row stayed locked for too long. Leave this
+                    # dispatch for the next tick; the others must not wait.
+                    mav_session.rollback()
+                    logger.warning(
+                        "dispatch=%s not advanced this tick: %s",
+                        mav_dispatch_id,
+                        getattr(exc.orig, "args", [exc])[-1],
+                    )
 
     def _retry_waiting(self) -> None:
         """Hand incidents that found no vehicle back to the queue."""

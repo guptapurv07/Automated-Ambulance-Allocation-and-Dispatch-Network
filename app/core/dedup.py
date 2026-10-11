@@ -14,7 +14,8 @@ incident stores a key built from three of its own fields:
 
     dedup_key = "<latitude cell>:<longitude cell>:<time bucket>:<incident type>"
 
-A new report is a duplicate when an open incident of the same type exists in
+A new report is a duplicate when an incident of the same type, whose ambulance
+has not yet left the scene, exists in
 the same cell or one of its eight neighbours, in the current time bucket or the
 previous one. Looking at neighbours is what stops two callers standing either
 side of a grid line, or calling either side of a bucket change, from being
@@ -39,9 +40,10 @@ protect it.
      second incident with the same key, whichever thread or process tries.
      This holds even if something gets past the mutex.
 
-A key lives only as long as its incident is open. It is cleared when the
-incident is resolved (see app/core/lifecycle.py), so the same place can have a
-new emergency later.
+A key lives only while its incident can still take in reports. It is cleared
+when the ambulance leaves the scene with the patient (see
+app/core/lifecycle.py). A call from the same place after that is about someone
+else, so it becomes a new incident with its own ambulance.
 """
 
 from __future__ import annotations
@@ -55,6 +57,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.queue import SEVERITY_RANK
 from app.models import Incident, IncidentType, Severity
 
 logger = logging.getLogger("dispatch.dedup")
@@ -173,16 +176,16 @@ def register_report(
             mav_existing = _insert_unless_taken(session, mav_incident)
             if mav_existing is None:
                 return mav_incident, False
-        _add_report(session, mav_existing)
+        _add_report(session, mav_existing, severity, description)
 
     return mav_existing, True
 
 
 def _find_open_incident(session: Session, keys: list[str]) -> Incident | None:
-    """The earliest open incident stored under any of `keys`, if there is one.
+    """The earliest incident stored under any of `keys`, if there is one.
 
-    A key exists only while its incident is open, so anything found here is
-    still being handled.
+    A key exists only until the ambulance leaves the scene, so anything found
+    here is an emergency that is still waiting for help or receiving it.
     """
     return (
         session.execute(
@@ -224,17 +227,44 @@ def _insert_unless_taken(session: Session, incident: Incident) -> Incident | Non
         return mav_winner
 
 
-def _add_report(session: Session, incident: Incident) -> None:
-    """Count one more caller against an existing incident.
+def _add_report(
+    session: Session,
+    incident: Incident,
+    severity: Severity,
+    description: str | None,
+) -> None:
+    """Add one more caller's report to an existing incident.
 
-    A single UPDATE that increments inside the database, not a read followed
-    by a write, so two duplicates arriving together cannot overwrite each
-    other's count.
+    The count is increased inside the database in a single UPDATE, not read
+    and then written, so two duplicates arriving together cannot overwrite
+    each other's count.
+
+    What the new caller said is not thrown away. If they describe the
+    emergency as more serious than what is on record, the incident takes the
+    higher severity; it is never lowered. Their description is added to the
+    one already stored. A second caller often knows more than the first, and
+    under priority scheduling the stored severity decides how soon help comes.
     """
+    mav_values: dict = {"report_count": Incident.report_count + 1}
+
+    if SEVERITY_RANK[severity.value] < SEVERITY_RANK[incident.severity.value]:
+        mav_values["severity"] = severity
+        logger.warning(
+            "incident=%s severity raised from %s to %s by a repeat report",
+            incident.id,
+            incident.severity.value,
+            severity.value,
+        )
+
+    mav_old = incident.description or ""
+    if description and description not in mav_old:
+        # The column holds 255 characters.
+        mav_values["description"] = (
+            f"{mav_old} | {description}" if mav_old else description
+        )[:255]
+
     session.execute(
-        update(Incident)
-        .where(Incident.id == incident.id)
-        .values(report_count=Incident.report_count + 1)
+        update(Incident).where(Incident.id == incident.id).values(**mav_values)
     )
     session.commit()
     session.refresh(incident)

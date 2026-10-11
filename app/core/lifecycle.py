@@ -14,7 +14,9 @@ rather than silently corrupting the fleet state.
 Second, **releasing a vehicle is a contended write, exactly like claiming one**.
 If the simulation clock releases an ambulance at the same moment a worker is
 evaluating it as a candidate, the two must not interleave. So transitions take
-the same `SELECT ... FOR UPDATE` row lock that allocation uses.
+the same `SELECT ... FOR UPDATE` row lock that allocation uses, and everything
+the decision depends on is read again after the lock is held. A lock only
+protects a decision that is made on data read under that lock.
 
 Third, **the vehicle's position follows the call**. On reaching the scene the
 ambulance is placed at the incident. On leaving, the receiving hospital is
@@ -120,28 +122,57 @@ def _nearest_hospital(session: Session, lat: float, lon: float) -> Hospital | No
     return min(mav_hospitals, key=lambda h: haversine_km(lat, lon, h.lat, h.lon))
 
 
-def advance_dispatch(session: Session, dispatch_id: int) -> AmbulanceStatus:
+def advance_dispatch(
+    session: Session,
+    dispatch_id: int,
+    expected: AmbulanceStatus | None = None,
+) -> AmbulanceStatus:
     """Move one dispatch to its next phase and commit. Returns the new status.
 
     Takes a row lock on the ambulance, because releasing a vehicle competes
     with allocation for the same row.
+
+    `expected` is the status the caller saw when it decided to advance. If the
+    vehicle has moved on since then, for example the clock and a manual
+    request acting on the same dispatch, the call is refused instead of
+    advancing a second time.
     """
     dispatch = session.get(Dispatch, dispatch_id)
     if dispatch is None:
         raise InvalidTransition(f"Dispatch {dispatch_id} does not exist")
-    if dispatch.status is not DispatchStatus.ACTIVE:
-        raise InvalidTransition(
-            f"Dispatch {dispatch_id} is {dispatch.status.value}, not ACTIVE"
-        )
 
-    # Lock the contended row before reading its status, so the decision below
-    # is made against committed state that cannot change underneath us.
-    mav_ambulance = session.execute(
-        select(Ambulance).where(Ambulance.id == dispatch.ambulance_id).with_for_update()
-    ).scalar_one()
+    try:
+        # Lock first, then read. `populate_existing` matters here: this session
+        # may already hold a copy of the ambulance that was loaded before the
+        # lock was taken, and by default the ORM hands that old copy back
+        # unchanged. The lock would be held, yet the decision would be made on
+        # stale data, and a vehicle that has since been given to another call
+        # could be marked free.
+        mav_ambulance = session.execute(
+            select(Ambulance)
+            .where(Ambulance.id == dispatch.ambulance_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one()
+        # The same holds for the dispatch. Every transition takes the lock
+        # above first, so from here on its state cannot change underneath us.
+        session.refresh(dispatch)
 
-    current = mav_ambulance.status
-    mav_upcoming = next_status(current)
+        if dispatch.status is not DispatchStatus.ACTIVE:
+            raise InvalidTransition(
+                f"Dispatch {dispatch_id} is {dispatch.status.value}, not ACTIVE"
+            )
+        current = mav_ambulance.status
+        if expected is not None and current is not expected:
+            raise InvalidTransition(
+                f"Dispatch {dispatch_id} has already moved from "
+                f"{expected.value} to {current.value}"
+            )
+        mav_upcoming = next_status(current)
+    except InvalidTransition:
+        session.rollback()  # give the row lock back before refusing
+        raise
+
     mav_now = datetime.now()
 
     mav_incident = dispatch.incident
@@ -157,6 +188,11 @@ def advance_dispatch(session: Session, dispatch_id: int) -> AmbulanceStatus:
         # the incident's position: the patient is there, so that is the trip
         # that matters. Stored on the dispatch so the journey time, the arrival
         # point and anything shown to a user all agree on the same hospital.
+        # The patient is leaving the scene, so this incident stops taking in
+        # repeat reports. A later call from the same place is a new emergency
+        # and must get its own ambulance.
+        mav_incident.dedup_key = None
+
         mav_hospital = _nearest_hospital(session, mav_incident.lat, mav_incident.lon)
         if mav_hospital is not None:
             dispatch.hospital = mav_hospital
@@ -177,9 +213,7 @@ def advance_dispatch(session: Session, dispatch_id: int) -> AmbulanceStatus:
         dispatch.status = DispatchStatus.COMPLETED
         dispatch.completed_at = mav_now
         mav_incident.status = IncidentStatus.RESOLVED
-        # Release the deduplication key, so that a later emergency at the
-        # same place is a new incident and not a duplicate of a finished one.
-        mav_incident.dedup_key = None
+        mav_incident.dedup_key = None  # already cleared when the patient left
 
     session.commit()
 
