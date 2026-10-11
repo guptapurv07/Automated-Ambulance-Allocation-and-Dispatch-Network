@@ -14,12 +14,12 @@ from __future__ import annotations
 from app.config import get_settings
 from app.core.dispatcher import handle_dispatch_request
 from app.core.pool import WorkerPool
-from app.core.queue import DispatchQueue, FifoScheduler
+from app.core.queue import DispatchQueue, scheduler_by_name
 from sim.clock import SimulationClock
 
 settings = get_settings()
 
-dispatch_queue = DispatchQueue(scheduler=FifoScheduler())
+dispatch_queue = DispatchQueue(scheduler=scheduler_by_name(settings.queue_scheduler))
 
 worker_pool = WorkerPool(
     queue=dispatch_queue,

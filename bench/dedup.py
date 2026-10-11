@@ -128,6 +128,9 @@ def run(gate_on: bool, accidents: int, callers: int, port: int) -> Result:
         "LOCKING_MODE": "for_update",
         "RACE_WINDOW_MS": "0",
         "WORKER_POOL_SIZE": "4",
+        # Kept on FIFO so the numbers stay comparable between runs. The
+        # schedulers are measured on their own in bench/scheduling.py.
+        "QUEUE_SCHEDULER": "fifo",
         "SIM_CLOCK_ENABLED": "false",   # no recycling and no retries mid-run
     }
     mav_proc = subprocess.Popen(

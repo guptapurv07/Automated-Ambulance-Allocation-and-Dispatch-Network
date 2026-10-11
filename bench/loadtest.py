@@ -112,6 +112,9 @@ def run_mode(mode: str, calls: int, workers: int, race_window: float,
         "LOCKING_MODE": mode,
         "WORKER_POOL_SIZE": str(workers),
         "RACE_WINDOW_MS": str(race_window),
+        # Kept on FIFO so the numbers stay comparable between runs. The
+        # schedulers are measured on their own in bench/scheduling.py.
+        "QUEUE_SCHEDULER": "fifo",
         "SIM_CLOCK_ENABLED": "false",   # vehicles must not recycle mid-run
         # These calls stand for 40 different emergencies that happen to be
         # close together. The deduplication gate would merge them, so it is

@@ -143,9 +143,9 @@ def register_report(
     duplicate of an emergency already on record. A duplicate creates nothing;
     it is counted against the existing incident.
     """
-    # Whole seconds only. The column stores no fraction, and the key has to be
-    # computable from the value that is actually stored.
-    mav_now = datetime.now().replace(microsecond=0)
+    # Set here, not by the database, so that the key is computed from exactly
+    # the value that is stored.
+    mav_now = datetime.now()
     mav_incident = Incident(
         lat=lat,
         lon=lon,

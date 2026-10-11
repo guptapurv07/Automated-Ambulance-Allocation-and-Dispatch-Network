@@ -22,8 +22,8 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.core.dedup import register_report
-from app.core.queue import DispatchRequest
 from app.core.runtime import dispatch_queue
+from app.core.scheduling import fleet_positions, make_request
 from app.db import get_session
 from app.models import Incident
 from app.schemas import (
@@ -85,11 +85,9 @@ def report_incident(
             poll=f"/incidents/{incident.id}",
         )
 
-    dispatch_queue.put(
-        DispatchRequest(
-            incident_id=incident.id, severity=incident.severity.value
-        )
-    )
+    # The queue entry carries the call's deadline and expected travel time,
+    # which is what the scheduler orders by.
+    dispatch_queue.put(make_request(incident, fleet_positions(session), settings))
 
     logger.info(
         "incident=%s QUEUED type=%s severity=%s at (%.5f, %.5f)  queue_depth=%d",

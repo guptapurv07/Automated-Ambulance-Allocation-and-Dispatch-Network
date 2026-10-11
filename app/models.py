@@ -19,7 +19,14 @@ from sqlalchemy import (
     String,
     func,
 )
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+# Timestamps that deadlines and the simulation clock do arithmetic on keep
+# microseconds. A plain MySQL DATETIME stores whole seconds, which at 60x
+# simulation speed is an error of a full simulated minute. They are filled in
+# by the application, so every row carries the precise local time.
+PreciseDateTime = DateTime().with_variant(mysql.DATETIME(fsp=6), "mysql")
 
 class Base(DeclarativeBase):
     pass
@@ -118,7 +125,7 @@ class Incident(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     reported_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), index=True
+        PreciseDateTime, default=datetime.now, index=True
     )
     caller_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -170,15 +177,17 @@ class Dispatch(Base):
         ForeignKey("hospitals.id"), nullable=True, index=True
     )
 
-    assigned_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    assigned_at: Mapped[datetime] = mapped_column(PreciseDateTime, default=datetime.now)
 
     # When the vehicle entered its *current* lifecycle phase. The simulation
     # clock compares this against the phase's expected duration to decide when
     # the dispatch should advance.
     phase_started_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now()
+        PreciseDateTime, default=datetime.now
     )
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        PreciseDateTime, nullable=True
+    )
 
     distance_km: Mapped[float] = mapped_column(Float)
     eta_minutes: Mapped[float] = mapped_column(Float)

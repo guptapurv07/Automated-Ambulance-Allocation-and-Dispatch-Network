@@ -19,13 +19,19 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.config import get_settings
 from app.core.allocation import NoAmbulanceAvailable, allocate_ambulance
 from app.core.queue import DispatchQueue, DispatchRequest
+from app.core.scheduling import (
+    RESPONSE_TARGET_MINUTES,
+    fleet_positions,
+    make_request,
+    response_minutes,
+)
 from app.db import session_scope
-from app.models import Ambulance, AmbulanceStatus, Incident, IncidentStatus
+from app.models import Incident, IncidentStatus
 
 logger = logging.getLogger("dispatch.worker")
 
@@ -37,6 +43,7 @@ def handle_dispatch_request(request: DispatchRequest) -> None:
     Session must never be shared across threads.
     """
     mav_queue_wait = request.waited_ms()
+    mav_settings = get_settings()
 
     with session_scope() as mav_session:
         mav_incident = mav_session.get(Incident, request.incident_id)
@@ -65,19 +72,43 @@ def handle_dispatch_request(request: DispatchRequest) -> None:
         )
 
         try:
-            allocate_ambulance(mav_session, mav_incident, get_settings())
+            mav_dispatch = allocate_ambulance(mav_session, mav_incident, mav_settings)
         except NoAmbulanceAvailable as exc:
             # Recorded as UNASSIGNED by the allocator. It is retried from
             # requeue_waiting_incidents once a vehicle is free.
             logger.warning("incident=%s not allocated: %s", mav_incident.id, exc)
+            return
+
+        # Was the response target met? This line is what the scheduling
+        # benchmark reads to compare the three schedulers.
+        mav_response = response_minutes(mav_incident, mav_dispatch, mav_settings)
+        mav_target = RESPONSE_TARGET_MINUTES[mav_incident.severity]
+        # waited = time until a vehicle was assigned, which is the part the
+        # scheduler controls. trip = the drive, which depends on which vehicle
+        # was sent.
+        logger.info(
+            "incident=%s SERVED  severity=%s waited=%.1fmin trip=%.1fmin "
+            "response=%.1fmin target=%.0fmin %s",
+            mav_incident.id,
+            mav_incident.severity.value,
+            mav_response - mav_dispatch.eta_minutes,
+            mav_dispatch.eta_minutes,
+            mav_response,
+            mav_target,
+            "ON TIME" if mav_response <= mav_target else "LATE",
+        )
 
 
 def requeue_waiting_incidents(queue: DispatchQueue) -> int:
-    """Put incidents that found no vehicle back on the queue, oldest first.
+    """Put incidents that found no vehicle back on the queue.
 
     Called on every tick of the simulation clock. At most one incident is
     re-queued per free vehicle, so a single ambulance returning to service
-    wakes the longest-waiting call rather than every waiting call at once.
+    wakes one waiting call and not all of them.
+
+    Which waiting call goes back is decided by the queue's own scheduler. The
+    retry therefore follows the same policy as the queue: oldest first under
+    FIFO, most severe first under priority, least spare time first under LLF.
 
     The waiting rows are claimed with `FOR UPDATE SKIP LOCKED` and moved back
     to REPORTED in the same transaction. That makes the hand-back atomic: two
@@ -88,14 +119,12 @@ def requeue_waiting_incidents(queue: DispatchQueue) -> int:
     if queue.is_closed:
         return 0
 
+    mav_settings = get_settings()
     mav_requests: list[DispatchRequest] = []
 
     with session_scope() as mav_session:
-        mav_free = mav_session.execute(
-            select(func.count())
-            .select_from(Ambulance)
-            .where(Ambulance.status == AmbulanceStatus.AVAILABLE)
-        ).scalar_one()
+        mav_fleet = fleet_positions(mav_session)
+        mav_free = sum(1 for mav_f in mav_fleet if mav_f[2])
         if mav_free == 0:
             return 0
 
@@ -103,24 +132,29 @@ def requeue_waiting_incidents(queue: DispatchQueue) -> int:
             select(Incident)
             .where(Incident.status == IncidentStatus.UNASSIGNED)
             .order_by(Incident.reported_at, Incident.id)
-            .limit(mav_free)
             .with_for_update(skip_locked=True)
         ).scalars().all()
         if not mav_waiting:
             return 0
 
-        mav_now = datetime.now()
-        for mav_incident in mav_waiting:
-            mav_incident.status = IncidentStatus.REPORTED
+        # Let the scheduler pick, one at a time, as it would from the queue.
+        mav_by_id = {mav_i.id: mav_i for mav_i in mav_waiting}
+        mav_candidates = [
+            make_request(mav_i, mav_fleet, mav_settings) for mav_i in mav_waiting
+        ]
+        while mav_candidates and len(mav_requests) < mav_free:
             mav_requests.append(
-                DispatchRequest(
-                    incident_id=mav_incident.id,
-                    severity=mav_incident.severity.value,
-                )
+                mav_candidates.pop(queue.scheduler.select(mav_candidates))
             )
+
+        mav_now = datetime.now()
+        for mav_request in mav_requests:
+            mav_incident = mav_by_id[mav_request.incident_id]
+            mav_incident.status = IncidentStatus.REPORTED
             logger.info(
-                "incident=%s RE-QUEUED  waited=%.0fs free_vehicles=%d",
+                "incident=%s RE-QUEUED  severity=%s waited=%.0fs free_vehicles=%d",
                 mav_incident.id,
+                mav_incident.severity.value,
                 (mav_now - mav_incident.reported_at).total_seconds(),
                 mav_free,
             )

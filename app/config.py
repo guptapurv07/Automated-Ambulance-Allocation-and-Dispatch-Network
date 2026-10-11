@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     # is applied identically in every locking mode, so comparisons stay fair.
     race_window_ms: float = 0.0
 
+    # --- Scheduling ---------------------------------------------------------
+    # Which queued call a free worker takes next. See app/core/queue.py.
+    #   fifo      arrival order
+    #   priority  most severe first
+    #   llf       Least Laxity First (least spare time before its deadline)
+    queue_scheduler: str = "llf"
+
     # --- Concurrency --------------------------------------------------------
     # Number of worker threads draining the dispatch queue. Allocation work is
     # I/O-bound on database waits, so threads genuinely overlap despite the GIL.
