@@ -1,0 +1,21 @@
+{
+  "features": [
+    "own_eta_x_severity",
+    "next_call_cost",
+    "extra_eta",
+    "coverage_lost",
+    "next_x_severity",
+    "rank"
+  ],
+  "weights": [
+    10.2089,
+    2.3952,
+    0.566,
+    0.2489,
+    0.2997,
+    0.5211
+  ],
+  "trained_by": "python -m rl.pg train",
+  "iteration": 475,
+  "dev_change_vs_lookahead_min": -0.0792
+}

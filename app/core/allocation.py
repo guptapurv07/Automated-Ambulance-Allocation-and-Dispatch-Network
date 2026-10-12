@@ -38,7 +38,8 @@ from app.models import (
     Incident,
     IncidentStatus,
 )
-from app.policy.base import GreedyPolicy, Policy
+from app.policy.base import Policy
+from app.policy.factory import get_policy
 
 logger = logging.getLogger("dispatch.allocation")
 
@@ -53,10 +54,11 @@ class NoAmbulanceAvailable(Exception):
 
 def _rank_candidates(
     session: Session, incident: Incident
-) -> list[tuple[int, float]]:
+) -> tuple[list[tuple[int, float]], dict[int, tuple[float, float]]]:
     """Phase 1: rank available vehicles by distance. Holds no locks.
 
-    Returns a list of (ambulance_id, distance_km), nearest first.
+    Returns a list of (ambulance_id, distance_km), nearest first, and a dict
+    mapping each ambulance_id to its (lat, lon).
     """
     mav_rows = session.execute(
         select(Ambulance.id, Ambulance.current_lat, Ambulance.current_lon).where(
@@ -69,7 +71,10 @@ def _rank_candidates(
         for mav_row in mav_rows
     ]
     mav_ranked.sort(key=lambda pair: pair[1])
-    return mav_ranked
+    mav_positions = {
+        mav_row.id: (mav_row.current_lat, mav_row.current_lon) for mav_row in mav_rows
+    }
+    return mav_ranked, mav_positions
 
 
 def allocate_ambulance(
@@ -82,15 +87,19 @@ def allocate_ambulance(
 
     Raises NoAmbulanceAvailable if every candidate was taken or is busy.
     """
-    mav_ranked = _rank_candidates(session, incident)
+    mav_ranked, mav_positions = _rank_candidates(session, incident)
     if not mav_ranked:
         logger.warning("incident=%s no available vehicles in fleet", incident.id)
         _mark_unassigned(session, incident)
         raise NoAmbulanceAvailable("No ambulance is currently available")
 
-    # The policy decides the order, still in phase 1 with no lock held. GreedyPolicy keeps
-    # nearest-first, which is the behaviour before policies existed.
-    mav_ordered = (policy or GreedyPolicy()).order(incident, mav_ranked)
+    # The policy decides the order, still in phase 1 with no lock held. The default policy,
+    # greedy, keeps nearest-first, which is the behaviour before policies existed.
+    mav_policy = policy or get_policy(settings)
+    mav_refresh = getattr(mav_policy, "refresh", None)
+    if mav_refresh is not None:
+        mav_refresh(session)
+    mav_ordered = mav_policy.order(incident, mav_ranked, mav_positions)
     mav_shortlist = mav_ordered[:CANDIDATE_POOL_SIZE]
     mav_distance_by_id = dict(mav_shortlist)
 

@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     #   llf       Least Laxity First (least spare time before its deadline)
     queue_scheduler: str = "llf"
 
+    # Which ambulance a call is sent to. See app/policy/.
+    #   greedy     the nearest free ambulance (the default)
+    #   lookahead  the nearest few, ordered by how little their departure hurts the next call
+    #   learned    the nearest few, scored with weights trained by reinforcement learning (rl/pg.py)
+    dispatch_policy: str = "greedy"
+    # How much the next call's expected response time counts against a candidate.
+    # 0 is the same as greedy; the simulation found 1 to 1.5 best.
+    lookahead_beta: float = 1.25
+
     # --- Concurrency --------------------------------------------------------
     # Number of worker threads draining the dispatch queue. Allocation work is
     # I/O-bound on database waits, so threads genuinely overlap despite the GIL.
