@@ -1,4 +1,4 @@
-"""Where incidents happen: the share of all incidents that fall in each cell of a 5x5 grid over the
+"""Where incidents happen: the share of all incidents that fall in each cell of a grid over the
 service area. A policy uses it to judge how much it would hurt to take an ambulance away from a place.
 
 Learnt from the incidents table, so it follows the real traffic. Until there is enough history it is
@@ -8,9 +8,16 @@ uniform, which makes the lookahead policy behave almost like "nearest" (it does 
 from __future__ import annotations
 
 import time
+from functools import lru_cache
 
-BBOX = (30.17, 30.39, 77.85, 78.13)  # lat_lo, lat_hi, lon_lo, lon_hi: the Dehradun service area
-GRID = 5
+from app.config import get_settings
+from app.geo import haversine_km
+
+_area = get_settings()
+# lat_lo, lat_hi, lon_lo, lon_hi: the service area from config.py, so there is one place to change it.
+BBOX = (_area.service_area_lat_min, _area.service_area_lat_max,
+        _area.service_area_lon_min, _area.service_area_lon_max)
+GRID = 9  # about 5 km per cell for the default area, roughly what an ambulance covers in 8 minutes
 
 # Centre of every cell, row by row from the south-west.
 CENTRES: list[tuple[float, float]] = [
@@ -21,6 +28,13 @@ CENTRES: list[tuple[float, float]] = [
     for i in range(GRID)
     for j in range(GRID)
 ]
+
+
+@lru_cache(maxsize=4096)
+def cell_km(lat: float, lon: float) -> tuple[float, ...]:
+    """Distance in km from a position to the centre of every cell. Cached: ambulances only change position
+    at a hospital, so the same few dozen positions come up again and again."""
+    return tuple(haversine_km(lat, lon, clat, clon) for clat, clon in CENTRES)
 
 
 def cell_of(lat: float, lon: float) -> int:

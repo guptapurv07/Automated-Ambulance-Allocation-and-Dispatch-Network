@@ -16,8 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.geo import haversine_km
-from app.policy.demand import CENTRES, DemandMap
+from app.policy.demand import CENTRES, DemandMap, cell_km
 
 if TYPE_CHECKING:
     from app.models import Incident
@@ -56,8 +55,7 @@ class LookaheadPolicy:
         mav_best, mav_owner, mav_second = [float("inf")] * mav_n, [None] * mav_n, [float("inf")] * mav_n
         for mav_id, _ in candidates:
             mav_lat, mav_lon = positions[mav_id]
-            for mav_c, (mav_clat, mav_clon) in enumerate(CENTRES):
-                mav_v = haversine_km(mav_lat, mav_lon, mav_clat, mav_clon)
+            for mav_c, mav_v in enumerate(cell_km(mav_lat, mav_lon)):
                 if mav_v < mav_best[mav_c]:
                     mav_second[mav_c], mav_best[mav_c], mav_owner[mav_c] = mav_best[mav_c], mav_v, mav_id
                 elif mav_v < mav_second[mav_c]:

@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     # Which ambulance a call is sent to. See app/policy/.
     #   greedy     the nearest free ambulance (the default)
     #   lookahead  the nearest few, ordered by how little their departure hurts the next call
+    #   learned    the nearest few, scored with weights trained by reinforcement learning (rl/pg.py)
     dispatch_policy: str = "greedy"
     # How much the next call's expected response time counts against a candidate.
     # 0 is the same as greedy; the simulation found 1 to 1.5 best.
