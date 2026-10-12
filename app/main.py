@@ -10,6 +10,7 @@ from app.api import ambulances, dispatches, health, incidents, queue
 from app.config import get_settings
 from app.core.dispatcher import recover_unfinished_incidents
 from app.core.runtime import dispatch_queue, simulation_clock, worker_pool
+from app.policy.factory import get_policy
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +31,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     exit the clock stops first and the pool last, and the pool finishes the
     queued calls before its workers stop.
     """
+    # Fail now, not on the first call, if DISPATCH_POLICY is unknown or its weights file is missing.
+    get_policy(settings)
     worker_pool.start()
     recover_unfinished_incidents(dispatch_queue)
     if settings.sim_clock_enabled:
