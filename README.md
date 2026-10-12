@@ -17,9 +17,9 @@ operating-system concepts (threads, a producer-consumer queue, synchronisation, 
 with database concepts (transactions, row-level locking, isolation, constraints), and it
 measures the effect of each one with a benchmark.
 
-A Reinforcement Learning model for choosing which ambulance to send is the next part of the
-project. The allocator is built so that the model only has to rank candidates; the locking
-underneath stays the same.
+Which ambulance is sent is decided by a dispatch policy. The default sends the nearest free
+ambulance. A policy trained by Reinforcement Learning can be switched on with one setting.
+A policy only ranks the candidates; the locking underneath stays the same.
 
 ## Current Status
 
@@ -32,8 +32,8 @@ underneath stays the same.
 | Duplicate call check | Built |
 | Retry of calls that found no ambulance | Built |
 | FIFO, priority and Least Laxity First scheduling | Built |
-| Benchmarks for locking, duplicates and scheduling | Built |
-| Reinforcement Learning ranking policy | In progress |
+| Dispatch policies: nearest, lookahead, and one trained by Reinforcement Learning | Built |
+| Benchmarks for locking, duplicates, scheduling and dispatch policy | Built |
 | Dashboard (React, Leaflet map) | Planned |
 | Redis, Docker, deployment on AWS | Planned |
 
@@ -98,8 +98,8 @@ Problem B is mutual exclusion enforced by a **row lock**.
                    └──────────────┼──────────────┘
                                   ▼
                      ┌──────────────────────────┐
-                     │         Ranking          │  nearest free ambulances first,
-                     │                          │  no lock held (RL will plug in here)
+                     │         Ranking          │  free ambulances, ordered by the
+                     │                          │  dispatch policy, no lock held
                      └────────────┬─────────────┘
                                   ▼
                      ┌──────────────────────────┐
@@ -121,11 +121,12 @@ Problem B is mutual exclusion enforced by a **row lock**.
    scheduler decides which waiting call a free worker takes next.
 4. **Worker thread pool.** A fixed set of threads takes calls from the queue. Each thread
    uses its own database session.
-5. **Ranking.** The free ambulances are ranked by distance without holding any lock. The
-   ranking returns a list, not a single choice.
+5. **Ranking.** The free ambulances are ranked by distance without holding any lock, and
+   the dispatch policy puts them in the order to try. The default policy keeps the nearest
+   first. The ranking returns a list, not a single choice.
 6. **Allocation transaction.** The top five candidates are locked in ascending id order,
-   their status is checked again, the nearest one still free is assigned, and the
-   transaction commits. *The ranking proposes; the lock disposes.*
+   their status is checked again, the first one in the policy's order that is still free
+   is assigned, and the transaction commits. *The ranking proposes; the lock disposes.*
 7. **Lifecycle.** A clock thread moves each ambulance through its call. The patient is taken
    to the hospital nearest to the incident, and the ambulance then becomes free. A call that
    found no ambulance is put back on the queue when one becomes free.
@@ -179,6 +180,32 @@ A call that has been accepted is never dropped.
 
 ---
 
+## Dispatch Policy
+
+The policy decides the order in which the nearest free ambulances are tried. It is chosen
+with the `DISPATCH_POLICY` setting and it runs before any lock is taken, so it cannot
+cause a double-booking.
+
+| Policy | What it does |
+|---|---|
+| `greedy` (default) | Sends the nearest free ambulance |
+| `lookahead` | Among the five nearest, sends the one whose leaving hurts the next expected call the least |
+| `learned` | Scores the five nearest with six weights trained by Reinforcement Learning |
+
+The `lookahead` and `learned` policies use a demand map: a 9 x 9 grid over the service area
+that holds the share of past incidents in each cell, read from the `incidents` table. A
+delay counts more for a severe call (CRITICAL 4, HIGH 2, MEDIUM 1, LOW 0.5), so a CRITICAL
+call almost always gets the nearest ambulance.
+
+The `learned` policy is trained with policy gradient (REINFORCE) in a simulator of the city
+(`rl/env.py`), which needs no database. One episode is a shift of 200 calls, and the reward
+is the severity-weighted response time. Training starts from the weights of the lookahead
+rule and is repeatable: running it again gives the same weights. Tabular Q-learning was
+tried first and did not beat the nearest policy; it is kept in `rl/train.py` as a negative
+result. The full account is in [`docs/RL_PLAN.md`](docs/RL_PLAN.md).
+
+---
+
 ## Data Model
 
 | Table | Holds |
@@ -201,7 +228,7 @@ AVAILABLE → ASSIGNED → EN_ROUTE → AT_SCENE → TRANSPORTING → AT_HOSPITA
 
 ## Results
 
-All three benchmarks run against a freshly seeded MySQL database with 12 ambulances.
+The benchmarks run against a freshly seeded MySQL database with 12 ambulances.
 Numbers change slightly from run to run because threads are timed by the operating system.
 
 ### Row-level locking
@@ -249,7 +276,32 @@ and Least Laxity First gave almost the same result in these runs.
 
 The 8-minute target for CRITICAL calls is missed in most cases under every scheduler,
 because the drive alone takes 9 to 10 minutes on average. That depends on which ambulance
-is sent, which is the part the Reinforcement Learning model is meant to improve.
+is sent and on how many ambulances there are, not on the order of the queue.
+
+### Dispatch policy
+
+Severity-weighted average response time in minutes. Lower is better.
+
+In the simulator, on 100 shifts the model was not trained on:
+
+| Load | Nearest | Lookahead | Learned (RL) |
+|---|---|---|---|
+| Normal | 9.82 | 9.72 | 9.71 |
+| Heavy | 15.52 | 15.44 | 15.37 |
+| Mixed fleets of 8 to 40 ambulances | 20.00 | 19.59 | 19.65 |
+
+On the real system (MySQL, worker pool, row locks), 20 shifts of 60 calls each:
+
+| Policy | Response | Compared with nearest |
+|---|---|---|
+| Nearest | 11.55 | |
+| Learned (RL) | 11.25 | 0.30 faster, better on 13 of 20 shifts |
+
+The learned policy is faster than nearest by about 1 to 3 percent. The gain is small, and
+on the real system it is not yet statistically significant. It gives about the same result
+as the lookahead rule, so the training confirms the rule and does not find a better one.
+With the learned policy switched on, the locking benchmark gives the same result as before:
+12 ambulances used once each and none double-booked.
 
 ---
 
@@ -258,8 +310,10 @@ is sent, which is the part the Reinforcement Learning model is meant to improve.
 * **Backend:** Python 3.13, FastAPI, Uvicorn, Pydantic
 * **Database:** MySQL 8 or newer (InnoDB), SQLAlchemy 2, PyMySQL
 * **Concurrency:** Python `threading` (own queue and worker thread pool)
-* **Planned:** Reinforcement Learning policy; React, Vite, TypeScript, Tailwind and Leaflet
-  for the dashboard; Redis; Docker; AWS (EC2 and RDS)
+* **Reinforcement Learning:** policy gradient and the simulator written in plain Python,
+  with no machine learning library
+* **Planned:** React, Vite, TypeScript, Tailwind and Leaflet for the dashboard; Redis;
+  Docker; AWS (EC2 and RDS)
 
 ---
 
@@ -288,15 +342,30 @@ app/
     allocation.py      Two-phase allocation with row locks  (Problem B)
     lifecycle.py       Ambulance state machine and hospital choice
     runtime.py         The shared queue, pool and clock
-  policy/              Reserved for the Reinforcement Learning ranking policy
+  policy/
+    base.py            The policy interface and the nearest-first policy
+    demand.py          Demand map: where past incidents happened
+    lookahead.py       Lookahead rule
+    learned.py         Policy scored with weights trained by Reinforcement Learning
+    learned_weights.json   The trained weights
+    factory.py         Picks the policy named in the settings
+    features.py        State encoding for the Q-learning experiment
 sim/
   seed.py              Creates the database and loads ambulances and hospitals
   clock.py             Simulation clock thread
+rl/
+  env.py               Simulator of the city used for training (no database)
+  pg.py                Policy-gradient training, check and evaluation
+  train.py             Tabular Q-learning (negative result)
+  search.py            Earlier experiment: search over a table policy
+  oracle.py            Earlier experiment: best possible result if the future were known
+  lookahead.py         Earlier experiment: tuning of the lookahead rule
 bench/
   loadtest.py          Locking benchmark
   dedup.py             Duplicate check benchmark
   scheduling.py        Scheduler benchmark
-docs/                  ER diagram and concept notes
+  policy_ab.py         Dispatch policies compared on the real system
+docs/                  ER diagram, concept notes and the Reinforcement Learning report
 ```
 
 ---
@@ -358,12 +427,16 @@ All settings live in `.env`. The most useful ones:
 |---|---|---|
 | `LOCKING_MODE` | `for_update` | `none`, `for_update` or `skip_locked` |
 | `QUEUE_SCHEDULER` | `llf` | `fifo`, `priority` or `llf` |
+| `DISPATCH_POLICY` | `greedy` | `greedy`, `lookahead` or `learned` |
+| `LOOKAHEAD_BETA` | `1.25` | How much the next expected call counts in the lookahead rule |
 | `DEDUP_ENABLED` | `true` | Switch the duplicate check on or off |
 | `WORKER_POOL_SIZE` | `4` | Number of worker threads |
 | `SIM_CLOCK_ENABLED` | `true` | Move ambulances through their calls automatically |
 | `SIM_TIME_SCALE` | `60` | Simulated minutes per real minute |
 | `LOCK_WAIT_TIMEOUT_SECONDS` | `3` | Longest wait for a row lock |
 | `AVG_SPEED_KMPH` | `32` | Average ambulance speed used for travel times |
+
+The server does not start if `QUEUE_SCHEDULER` or `DISPATCH_POLICY` has an unknown value.
 
 ---
 
@@ -446,6 +519,36 @@ python -m bench.scheduling
 
 They print the tables shown under Results.
 
+### 5. The dispatch policy and Reinforcement Learning
+
+These three need no database and no server, and they finish in under a minute.
+
+```bash
+python -m rl.env
+python -m rl.pg check
+python -m rl.pg eval
+```
+
+The first checks the simulator. The second checks that the learned policy, at its starting
+weights, makes the same choice as the lookahead rule. The third compares nearest, lookahead
+and learned on shifts the model was not trained on.
+
+To train again (about 9 minutes; it rewrites `app/policy/learned_weights.json`):
+
+```bash
+python -m rl.pg train
+```
+
+To compare the policies on the real system, stop the server first. This starts its own
+server and resets the database, and it takes about 12 minutes for 6 shifts.
+
+```bash
+python -m bench.policy_ab --seeds 6
+```
+
+To run the server with the learned policy, set `DISPATCH_POLICY=learned` in `.env` and
+start it as usual.
+
 ---
 
 ## Assumptions and Limits
@@ -461,6 +564,10 @@ They print the tables shown under Results.
 * The patient goes to the nearest hospital; bed capacity is stored but not yet used.
 * After a call the ambulance waits at the hospital; it does not drive back to its station.
 * A dispatch cannot be cancelled once it has been made.
+* The learned policy improves the response time only slightly. It was trained on simulated
+  calls with assumed busy areas, not on real ambulance data.
+* The trained weights fit the speed and the service area set in `.env`. If either changes,
+  train again with `python -m rl.pg train`.
 * Waiting calls are retried by the simulation clock, so the clock must be running.
 * The system runs as one server process. The queue and the duplicate check's lock are in
   memory, so running several servers side by side needs Redis first.
@@ -475,6 +582,7 @@ They print the tables shown under Results.
 * [`docs/ER_Diagram.pdf`](docs/ER_Diagram.pdf): ER diagram of the database
 * [`docs/OS_Concepts_Used.docx`](docs/OS_Concepts_Used.docx): operating system concepts used in the project
 * [`docs/Deadlock_Prevention_Simple.docx`](docs/Deadlock_Prevention_Simple.docx): how deadlocks are prevented
+* [`docs/RL_PLAN.md`](docs/RL_PLAN.md): the Reinforcement Learning part: what was built, the results, and how to reproduce them
 
 ---
 
