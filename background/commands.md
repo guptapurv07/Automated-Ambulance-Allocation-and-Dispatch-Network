@@ -161,6 +161,44 @@ ROLLBACK;
 Then type `exit` in both sessions. A session left open with an unfinished transaction
 blocks the database reset.
 
+### The system's own lock, while a call is being allocated
+
+In normal running the system holds its row locks for a few milliseconds, which is too
+short to see. This makes it hold them for 15 seconds.
+
+Window A. Stop the server (Ctrl+C) and start it with the locks slowed down:
+
+```
+RACE_WINDOW_MS=15000 uvicorn app.main:app --no-access-log
+```
+
+Window B. Run scene 1 of the demonstration and enter one call:
+
+```
+python -m demo
+```
+
+In a MySQL session, within the 15 seconds. Type it beforehand, so that you only have to
+press Enter:
+
+```
+SELECT a.id, a.call_sign, a.status, l.LOCK_MODE, l.LOCK_STATUS FROM performance_schema.data_locks l JOIN ambulance_dispatch.ambulances a ON a.id = l.LOCK_DATA WHERE l.OBJECT_NAME = 'ambulances' AND l.LOCK_TYPE = 'RECORD' ORDER BY a.id;
+```
+
+It lists the five nearest ambulances, each with an exclusive (`X`) lock held by the worker
+thread. Run it again after the 15 seconds: it returns nothing, and one of the five is on
+its way.
+
+Send only one call at a time in this mode. The demonstration shows the ambulance allocated
+about 15 minutes late, because 15 real seconds are 15 simulated minutes.
+
+Window A. Stop the server and start it normally again. Do not skip this, or every later
+call will take 15 seconds:
+
+```
+uvicorn app.main:app --no-access-log
+```
+
 ---
 
 ## 5. The race condition, measured
