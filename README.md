@@ -30,10 +30,12 @@ A policy only ranks the candidates; the locking underneath stays the same.
 | Ambulance lifecycle and simulation clock | Built |
 | Own queue and worker thread pool | Built |
 | Duplicate call check | Built |
+| Several patients in one incident, one ambulance for each | Built |
 | Retry of calls that found no ambulance | Built |
 | FIFO, priority and Least Laxity First scheduling | Built |
 | Dispatch policies: nearest, lookahead, and one trained by Reinforcement Learning | Built |
 | Benchmarks for locking, duplicates, scheduling and dispatch policy | Built |
+| Terminal demonstration | Built |
 | Dashboard (React, Leaflet map) | Planned |
 | Redis, Docker, deployment on AWS | Planned |
 
@@ -59,6 +61,11 @@ type exists in the same or a neighbouring cell (about 100 m), in the current or 
 2-minute window. A duplicate is counted on the existing incident and no second ambulance is
 sent. The check is protected by a mutex, and a `UNIQUE` index on the key makes MySQL itself
 refuse a second incident for the same emergency.
+
+A caller can also say how many people are injured. One ambulance is sent for each patient,
+however many callers report the accident: three callers reporting five injured get five
+ambulances, not three and not fifteen. If a later caller counts more injured than are on
+record, only the difference is added. The number is raised and never lowered.
 
 ### Problem B: Contended Allocation
 
@@ -156,6 +163,7 @@ Problem B is mutual exclusion enforced by a **row lock**.
 | Isolation level | `READ COMMITTED`, to avoid the gap locks of `REPEATABLE READ` |
 | Unique constraints | One dispatch per incident; one incident per emergency (the duplicate key) |
 | Foreign keys | A dispatch references its incident, ambulance and hospital |
+| Self-referencing foreign key | The row of a further patient points to the first row of the same accident |
 | Atomic update | The report counter is increased inside one `UPDATE` statement |
 | Indexing | Status columns, report time and foreign keys are indexed, so the lookups that run every second read only the rows they need |
 
@@ -212,11 +220,13 @@ result. The full account is in [`docs/RL_PLAN.md`](docs/RL_PLAN.md).
 |---|---|
 | `ambulances` | Call sign, station, base and current position, status |
 | `hospitals` | Name, position, bed capacity |
-| `incidents` | Position, type, severity, status, report time, duplicate key, report count |
+| `incidents` | Position, type, severity, status, report time, duplicate key, report count, number of patients, link to the first row of the same accident |
 | `dispatches` | The incident, the ambulance and the hospital of one call, with times, distance and ETA |
 
 Relationships: one ambulance has many dispatches; one incident has at most one dispatch;
-one hospital receives many dispatches. The ER diagram is in [`docs/ER_Diagram.pdf`](docs/ER_Diagram.pdf).
+one hospital receives many dispatches. An accident with several patients is stored as
+several linked incident rows, one for each patient, so each row still gets exactly one
+ambulance. The ER diagram is in [`docs/ER_Diagram.pdf`](docs/ER_Diagram.pdf).
 
 **Ambulance lifecycle**
 
@@ -365,6 +375,9 @@ bench/
   dedup.py             Duplicate check benchmark
   scheduling.py        Scheduler benchmark
   policy_ab.py         Dispatch policies compared on the real system
+demo/                  Terminal demonstration (python -m demo)
+background/
+  commands.md          Every command for showing the background parts, in order
 docs/                  ER diagram, concept notes and the Reinforcement Learning report
 ```
 
@@ -444,22 +457,40 @@ The server does not start if `QUEUE_SCHEDULER` or `DISPATCH_POLICY` has an unkno
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/incidents` | Report an emergency. Replies `202` with an incident id, or says it is a duplicate |
+| `POST` | `/incidents` | Report an emergency. Replies `202` with an incident id, or says it is a duplicate. With `patients` it requests one ambulance for each |
 | `GET` | `/incidents/{id}` | The incident with its dispatch, ambulance and hospital |
 | `GET` | `/ambulances` | The fleet with position and status; filter with `?status=`, page with `?limit=` and `?offset=` |
 | `GET` | `/dispatches` | Dispatch records, newest first, 100 per page; filter with `?status=`, page with `?limit=` and `?offset=` |
 | `POST` | `/dispatches/{id}/advance` | Move a dispatch forward by one lifecycle step |
 | `POST` | `/dispatches/{id}/complete` | Finish a dispatch and free its ambulance |
 | `GET` | `/queue` | Queue depth, scheduler, worker counters and clock state |
-| `GET` | `/health` | Service and database check |
+| `GET` | `/health` | Service and database check, with the locking mode, scheduler and dispatch policy in use |
 
 A call needs `lat` and `lon`. Optional fields are `severity` (`CRITICAL`, `HIGH`, `MEDIUM`,
 `LOW`), `incident_type` (`ROAD_ACCIDENT`, `CARDIAC`, `BREATHING`, `INJURY`, `FIRE`,
-`PREGNANCY`, `OTHER`), `caller_phone` and `description`.
+`PREGNANCY`, `OTHER`), `patients` (how many people need an ambulance, 1 to 10, default 1),
+`caller_phone` and `description`.
 
 ---
 
 ## Running the Demonstrations
+
+### The terminal demonstration
+
+```bash
+python -m demo
+```
+
+A menu with six scenes: one emergency from the call to the hospital, five callers
+reporting one accident, one accident with several injured and three callers, seventeen
+emergencies for twelve ambulances, a call from outside the city, and the fleet. It talks to
+the server over the API like any other caller, and starts a server itself if none is
+running. To watch the server's log beside it, start the server in a second terminal first
+with `uvicorn app.main:app --no-access-log`.
+
+Every command for showing the background parts (the API by hand, the row lock in MySQL, the
+benchmarks, the tables) is listed in order in
+[`background/commands.md`](background/commands.md). The steps below are the main ones.
 
 Start the server first, unless a step says otherwise.
 
@@ -559,7 +590,13 @@ start it as usual.
 * Time is compressed: one simulated minute passes each real second by default.
 * Two reports are merged only if the callers choose the same incident type. A repeat report
   can raise the severity of the incident and adds its description; once the ambulance has
-  left with the patient, a call from the same place is treated as a new incident.
+  left with the patient (with several patients, once the last one has been picked up), a
+  call from the same place is treated as a new incident.
+* One ambulance carries one patient, and one call can ask for at most 10 ambulances. If
+  fewer are free than an accident needs, the rest are sent as others become free.
+* When six or more calls are handled in the same instant, a call can find all five of its
+  nearest ambulances taken by the others and is then tried again one clock tick later, so
+  now and then a less urgent call gets its ambulance a moment before a more urgent one.
 * Calls from outside the service area (a box around Dehradun, set in `.env`) are refused.
 * The patient goes to the nearest hospital; bed capacity is stored but not yet used.
 * After a call the ambulance waits at the hospital; it does not drive back to its station.

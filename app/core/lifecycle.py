@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from app.geo import eta_minutes, haversine_km
@@ -40,6 +40,7 @@ from app.models import (
     Dispatch,
     DispatchStatus,
     Hospital,
+    Incident,
     IncidentStatus,
 )
 
@@ -65,6 +66,13 @@ PHASE_MINUTES: dict[AmbulanceStatus, float | None] = {
     AmbulanceStatus.TRANSPORTING: None,  # travel from the scene to the hospital
     AmbulanceStatus.AT_HOSPITAL: 5.0,    # handover, then back in service
 }
+
+# The phases in which the patient has not been picked up yet.
+BEFORE_PICKUP: tuple[AmbulanceStatus, ...] = (
+    AmbulanceStatus.ASSIGNED,
+    AmbulanceStatus.EN_ROUTE,
+    AmbulanceStatus.AT_SCENE,
+)
 
 # Trip time used only when a dispatch has no hospital recorded (an empty
 # hospitals table), so that the call can still run to completion.
@@ -120,6 +128,52 @@ def _nearest_hospital(session: Session, lat: float, lon: float) -> Hospital | No
     if not mav_hospitals:
         return None
     return min(mav_hospitals, key=lambda h: haversine_km(lat, lon, h.lat, h.lon))
+
+
+def _others_not_picked_up(session: Session, main_id: int, incident_id: int) -> bool:
+    """Is another patient of the same accident still waiting to be picked up?
+
+    `main_id` is the first row of the accident and `incident_id` the row being
+    moved now, which is left out. A patient is still waiting if no ambulance
+    has been found yet, or if the ambulance has not left the scene.
+    """
+    mav_rows = session.execute(
+        select(Incident.status, Ambulance.status)
+        .outerjoin(Dispatch, Dispatch.incident_id == Incident.id)
+        .outerjoin(Ambulance, Ambulance.id == Dispatch.ambulance_id)
+        .where(
+            or_(Incident.id == main_id, Incident.parent_id == main_id),
+            Incident.id != incident_id,
+        )
+    ).all()
+    return any(
+        mav_incident_status in (IncidentStatus.REPORTED, IncidentStatus.UNASSIGNED)
+        or (
+            mav_incident_status is IncidentStatus.ASSIGNED
+            and mav_ambulance_status in BEFORE_PICKUP
+        )
+        for mav_incident_status, mav_ambulance_status in mav_rows
+    )
+
+
+def _stop_taking_reports(session: Session, incident: Incident) -> None:
+    """Clear the duplicate key once the last patient has left the scene.
+
+    While the key is there, a call from the same place is counted as a repeat
+    report. With one patient it is cleared as that patient leaves. With
+    several, the key is on the first row of the accident and stays until every
+    patient has been picked up, so a caller who rings while some of them are
+    still waiting is not treated as a new emergency.
+    """
+    mav_main_id = incident.parent_id or incident.id
+    if _others_not_picked_up(session, mav_main_id, incident.id):
+        return
+    if incident.parent_id is None:
+        incident.dedup_key = None
+    else:
+        session.execute(
+            update(Incident).where(Incident.id == mav_main_id).values(dedup_key=None)
+        )
 
 
 def advance_dispatch(
@@ -188,10 +242,11 @@ def advance_dispatch(
         # the incident's position: the patient is there, so that is the trip
         # that matters. Stored on the dispatch so the journey time, the arrival
         # point and anything shown to a user all agree on the same hospital.
-        # The patient is leaving the scene, so this incident stops taking in
-        # repeat reports. A later call from the same place is a new emergency
-        # and must get its own ambulance.
-        mav_incident.dedup_key = None
+        # The patient is leaving the scene. Once the last patient of the
+        # accident has left, it stops taking in repeat reports: a later call
+        # from the same place is a new emergency and must get its own
+        # ambulance.
+        _stop_taking_reports(session, mav_incident)
 
         mav_hospital = _nearest_hospital(session, mav_incident.lat, mav_incident.lon)
         if mav_hospital is not None:
@@ -213,7 +268,8 @@ def advance_dispatch(
         dispatch.status = DispatchStatus.COMPLETED
         dispatch.completed_at = mav_now
         mav_incident.status = IncidentStatus.RESOLVED
-        mav_incident.dedup_key = None  # already cleared when the patient left
+        # Normally cleared already, when the last patient left the scene.
+        _stop_taking_reports(session, mav_incident)
 
     session.commit()
 
