@@ -221,3 +221,6 @@ __marimo__/
 node_modules/
 dist/
 .vite/
+
+# macOS folder settings
+.DS_Store
