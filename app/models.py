@@ -153,6 +153,18 @@ class Incident(Base):
     # count instead of creating another incident.
     report_count: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
+    # Several injured people. One ambulance carries one patient, and one
+    # incident row gets one ambulance, so an accident with several patients is
+    # stored as several linked rows: this row for the first patient, with the
+    # total in `patients`, and one more row for each further patient, pointing
+    # back here through `parent_id`. Each row goes through the queue and the
+    # row locking on its own, which is what gives every patient a different
+    # ambulance. See app/core/dedup.py.
+    patients: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    parent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("incidents.id"), nullable=True, index=True
+    )
+
     dispatch: Mapped["Dispatch | None"] = relationship(
         back_populates="incident", uselist=False
     )

@@ -44,6 +44,16 @@ A key lives only while its incident can still take in reports. It is cleared
 when the ambulance leaves the scene with the patient (see
 app/core/lifecycle.py). A call from the same place after that is about someone
 else, so it becomes a new incident with its own ambulance.
+
+Several patients
+----------------
+A caller can say how many people are injured. One ambulance carries one
+patient, so the incident is stored as that many linked rows, and each row gets
+its own ambulance through the normal queue. Only the first row holds the key,
+so repeat reports are still merged into it and the number of ambulances does
+not grow with the number of callers. If a later caller reports more patients
+than are on record, only the difference is added; the number is raised and
+never lowered, the same rule as for severity.
 """
 
 from __future__ import annotations
@@ -139,12 +149,17 @@ def register_report(
     caller_phone: str | None,
     description: str | None,
     dedup_enabled: bool,
-) -> tuple[Incident, bool]:
+    patients: int = 1,
+) -> tuple[Incident, bool, list[Incident]]:
     """Record one emergency call.
 
-    Returns the incident the call belongs to, and whether the call was a
-    duplicate of an emergency already on record. A duplicate creates nothing;
-    it is counted against the existing incident.
+    Returns the incident the call belongs to, whether the call was a duplicate
+    of an emergency already on record, and the rows this call created. Each
+    created row needs one ambulance and has to be queued by the caller.
+
+    A new emergency creates one row for each patient. A duplicate is counted
+    against the existing incident and normally creates nothing; it creates rows
+    only for patients that were not known before.
     """
     # Set here, not by the database, so that the key is computed from exactly
     # the value that is stored.
@@ -156,6 +171,7 @@ def register_report(
         incident_type=incident_type,
         caller_phone=caller_phone,
         description=description,
+        patients=patients,
         reported_at=mav_now,
     )
 
@@ -164,7 +180,7 @@ def register_report(
         # own incident, as it did before this gate existed.
         session.add(mav_incident)
         session.commit()
-        return mav_incident, False
+        return mav_incident, False, _first_rows(session, mav_incident)
 
     mav_incident.dedup_key = dedup_key(lat, lon, incident_type, mav_now)
     mav_candidates = candidate_keys(lat, lon, incident_type, mav_now)
@@ -175,10 +191,45 @@ def register_report(
         if mav_existing is None:
             mav_existing = _insert_unless_taken(session, mav_incident)
             if mav_existing is None:
-                return mav_incident, False
-        _add_report(session, mav_existing, severity, description)
+                # Still inside the gate, so a repeat report arriving now sees
+                # the incident with all its patients already on record.
+                return mav_incident, False, _first_rows(session, mav_incident)
+        mav_added = _add_report(session, mav_existing, severity, description, patients)
 
-    return mav_existing, True
+    return mav_existing, True, mav_added
+
+
+def _first_rows(session: Session, incident: Incident) -> list[Incident]:
+    """Every row of a newly created incident: its own, then one per further patient."""
+    return [incident, *_add_patients(session, incident, incident.patients - 1)]
+
+
+def _add_patients(session: Session, incident: Incident, count: int) -> list[Incident]:
+    """Create the rows for `count` further patients of `incident`.
+
+    Each row repeats the place, type and severity of the incident and points
+    back to it. It has no key of its own, so it can never be mistaken for a
+    separate emergency or take in repeat reports.
+    """
+    if count <= 0:
+        return []
+    mav_now = datetime.now()
+    mav_rows = [
+        Incident(
+            lat=incident.lat,
+            lon=incident.lon,
+            severity=incident.severity,
+            incident_type=incident.incident_type,
+            caller_phone=incident.caller_phone,
+            description=incident.description,
+            reported_at=mav_now,
+            parent_id=incident.id,
+        )
+        for _ in range(count)
+    ]
+    session.add_all(mav_rows)
+    session.commit()
+    return mav_rows
 
 
 def _find_open_incident(session: Session, keys: list[str]) -> Incident | None:
@@ -232,8 +283,12 @@ def _add_report(
     incident: Incident,
     severity: Severity,
     description: str | None,
-) -> None:
+    patients: int = 1,
+) -> list[Incident]:
     """Add one more caller's report to an existing incident.
+
+    Returns the rows created for patients this caller was the first to report;
+    usually none.
 
     The count is increased inside the database in a single UPDATE, not read
     and then written, so two duplicates arriving together cannot overwrite
@@ -244,10 +299,27 @@ def _add_report(
     higher severity; it is never lowered. Their description is added to the
     one already stored. A second caller often knows more than the first, and
     under priority scheduling the stored severity decides how soon help comes.
+
+    The number of patients follows the same rule. A caller who counts more
+    injured people than are on record raises the number, and an ambulance is
+    requested for each of the extra ones. A caller who counts fewer changes
+    nothing, so three callers reporting five patients get five ambulances and
+    not fifteen.
     """
     mav_values: dict = {"report_count": Incident.report_count + 1}
 
-    if SEVERITY_RANK[severity.value] < SEVERITY_RANK[incident.severity.value]:
+    mav_extra = patients - incident.patients
+    if mav_extra > 0:
+        mav_values["patients"] = patients
+        logger.warning(
+            "incident=%s patients raised from %d to %d by a repeat report",
+            incident.id,
+            incident.patients,
+            patients,
+        )
+
+    mav_raised = SEVERITY_RANK[severity.value] < SEVERITY_RANK[incident.severity.value]
+    if mav_raised:
         mav_values["severity"] = severity
         logger.warning(
             "incident=%s severity raised from %s to %s by a repeat report",
@@ -266,5 +338,13 @@ def _add_report(
     session.execute(
         update(Incident).where(Incident.id == incident.id).values(**mav_values)
     )
+    if mav_raised:
+        # The other patients of the same accident are as badly hurt.
+        session.execute(
+            update(Incident)
+            .where(Incident.parent_id == incident.id)
+            .values(severity=severity)
+        )
     session.commit()
     session.refresh(incident)
+    return _add_patients(session, incident, mav_extra)

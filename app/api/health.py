@@ -35,11 +35,15 @@ def health(
             status="degraded",
             database="unreachable",
             locking_mode=settings.locking_mode,
+            queue_scheduler=settings.queue_scheduler,
+            dispatch_policy=settings.dispatch_policy,
         )
 
     return HealthOut(
         status="ok",
         database="connected",
         locking_mode=settings.locking_mode,
+        queue_scheduler=settings.queue_scheduler,
+        dispatch_policy=settings.dispatch_policy,
         ambulances_available=mav_available,
     )

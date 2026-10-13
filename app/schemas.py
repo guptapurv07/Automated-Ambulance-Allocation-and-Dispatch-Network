@@ -14,6 +14,10 @@ from app.models import (
     Severity,
 )
 
+# The most ambulances one call may ask for. The fleet is small, and a mistyped
+# number must not be able to empty it.
+MAX_PATIENTS_PER_CALL = 10
+
 
 class AmbulanceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -43,6 +47,8 @@ class IncidentCreate(BaseModel):
     lon: float = Field(..., ge=-180, le=180, examples=[78.0413])
     severity: Severity = Severity.HIGH
     incident_type: IncidentType = IncidentType.OTHER
+    # How many people need an ambulance. One ambulance is sent for each.
+    patients: int = Field(default=1, ge=1, le=MAX_PATIENTS_PER_CALL, examples=[1])
     caller_phone: str | None = Field(default=None, max_length=20)
     description: str | None = Field(default=None, max_length=255)
 
@@ -84,17 +90,34 @@ class IncidentOut(BaseModel):
     severity: Severity
     status: IncidentStatus
     report_count: int
+    patients: int = 1
+    parent_id: int | None = None
     caller_phone: str | None = None
     description: str | None = None
 
 
+class UnitOut(BaseModel):
+    """One patient of an incident with several: the row and its ambulance."""
+
+    incident_id: int
+    status: IncidentStatus
+    dispatch: DispatchOut | None = None
+    ambulance: AmbulanceOut | None = None
+    hospital: HospitalOut | None = None
+
+
 class AllocationResult(BaseModel):
-    """An incident with its dispatch, vehicle and hospital, once each exists."""
+    """An incident with its dispatch, vehicle and hospital, once each exists.
+
+    For an incident with several patients, `units` lists every patient's row
+    with its own ambulance, this incident first.
+    """
 
     incident: IncidentOut
     dispatch: DispatchOut | None = None
     ambulance: AmbulanceOut | None = None
     hospital: HospitalOut | None = None
+    units: list[UnitOut] = []
     message: str
 
 
@@ -107,12 +130,19 @@ class IncidentAccepted(BaseModel):
     When `duplicate` is true the call matched an emergency already on record.
     Nothing new was queued: `incident_id` is the existing incident, and
     `report_count` is how many callers have now reported it.
+
+    `patients` is how many ambulances the incident needs in total, and
+    `incident_ids` are the rows this call created, one for each ambulance it
+    asked for. A repeat report creates rows only when it reports more patients
+    than were known.
     """
 
     incident_id: int
     status: IncidentStatus
     duplicate: bool = False
     report_count: int = 1
+    patients: int = 1
+    incident_ids: list[int] = []
     queue_depth: int
     message: str
     poll: str
@@ -130,4 +160,6 @@ class HealthOut(BaseModel):
     status: str
     database: str
     locking_mode: str
+    queue_scheduler: str = ""
+    dispatch_policy: str = ""
     ambulances_available: int | None = None
