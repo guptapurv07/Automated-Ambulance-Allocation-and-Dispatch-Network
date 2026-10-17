@@ -1,7 +1,7 @@
 """Background clock that advances dispatches through their lifecycle.
 
 Without this, a vehicle claimed by the allocator stays claimed forever: the
-fleet drains to nothing after twelve calls and no further allocation can
+fleet drains to nothing after one call per ambulance and no further allocation can
 succeed. The clock is what makes the system a *simulation* rather than a
 one-shot form, and it is what makes sustained concurrency testing possible --
 there is no contention to measure if there is nothing left to contend over.

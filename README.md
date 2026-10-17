@@ -243,21 +243,22 @@ AVAILABLE → ASSIGNED → EN_ROUTE → AT_SCENE → TRANSPORTING → AT_HOSPITA
 
 ## Results
 
-The benchmarks run against a freshly seeded MySQL database with 12 ambulances.
-Numbers change slightly from run to run because threads are timed by the operating system.
+The benchmarks run against a freshly seeded MySQL database with 30 ambulances and no past
+calls. Numbers change slightly from run to run because threads are timed by the operating
+system.
 
 ### Row-level locking
 
-40 calls at the same instant, 8 worker threads.
+60 calls at the same instant, 8 worker threads.
 
 | Locking mode | Dispatches | Different ambulances used | Double-booked |
 |---|---|---|---|
-| none | 40 | 7 | 6 |
-| `FOR UPDATE` | 12 | 12 | 0 |
-| `FOR UPDATE SKIP LOCKED` | 7 | 7 | 0 |
+| none | 60 | 14 | 14 |
+| `FOR UPDATE` | 30 | 30 | 0 |
+| `FOR UPDATE SKIP LOCKED` | 19 | 19 | 0 |
 
-Without locking, 40 calls were "served" by 7 ambulances. With `FOR UPDATE` all 12 ambulances
-were used once each and the other 28 calls waited. `SKIP LOCKED` never waits for a lock, but
+Without locking, 60 calls were "served" by 14 ambulances. With `FOR UPDATE` all 30 ambulances
+were used once each and the other 30 calls waited. `SKIP LOCKED` never waits for a lock, but
 it leaves some ambulances unused because a thread skips any row another thread holds.
 
 ### Duplicate check
@@ -266,15 +267,15 @@ it leaves some ambulances unused because a thread skips any row another thread h
 
 | Duplicate check | Reports | Incidents | Ambulances sent | Unnecessary | Left free |
 |---|---|---|---|---|---|
-| off | 30 | 30 | 12 | 6 | 0 |
-| on | 30 | 6 | 6 | 0 | 6 |
+| off | 30 | 30 | 28 | 22 | 2 |
+| on | 30 | 6 | 6 | 0 | 24 |
 
-With 8 accidents and 10 callers each, the run without the check also left 2 accidents with
-no ambulance at all.
+With 8 accidents and 10 callers each, the run without the check used all 30 ambulances on
+those 8 accidents; with the check, 8 ambulances went and 22 stayed free.
 
 ### Several patients
 
-One accident, checked against the running system with its 12 ambulances.
+One accident, checked against the running system with its 30 ambulances.
 
 | What was reported | Ambulances sent |
 |---|---|
@@ -289,20 +290,21 @@ new incident.
 
 ### Scheduling
 
-48 calls of mixed severity over 60 simulated minutes, so calls have to wait.
-Average wait for an ambulance, in minutes:
+100 calls of mixed severity over 60 simulated minutes, from the central part of the city,
+so calls have to wait. Average wait for an ambulance, in minutes:
 
 | Scheduler | CRITICAL | HIGH | MEDIUM | LOW |
 |---|---|---|---|---|
-| FIFO | 16.7 | 16.7 | 19.4 | 22.2 |
-| Priority | 3.4 | 9.9 | 24.9 | 36.4 |
-| Least Laxity First | 5.0 | 11.0 | 24.9 | 40.2 |
+| FIFO | 10.2 | 11.0 | 12.3 | 15.3 |
+| Priority | 1.1 | 3.2 | 20.3 | 25.4 |
+| Least Laxity First | 4.5 | 7.5 | 19.5 | 19.1 |
 
-Priority and Least Laxity First cut the wait for CRITICAL calls from about 17 minutes to
-3 to 5, and LOW calls pay for it. At a moderate load (36 calls) they also reduce the number
-of late calls from 13 to 10. When the system is overloaded (48 calls) the number of late
-calls rises from 26 to 30 and 33, because MEDIUM and LOW calls miss their targets. Priority
-and Least Laxity First gave almost the same result in these runs.
+Priority and Least Laxity First cut the wait for CRITICAL calls from about 10 minutes to
+1 to 5, and MEDIUM and LOW calls pay for it. The total number of late calls does not get
+better: 46 of 100 under FIFO, 41 under priority and 54 under Least Laxity First, because
+MEDIUM calls start missing their 30-minute target. With 120 calls the system is overloaded
+and the CRITICAL wait under FIFO grows to 23 minutes, against 3 under priority. In these
+runs priority did better than Least Laxity First, which also weighs the length of the trip.
 
 The 8-minute target for CRITICAL calls is missed in most cases under every scheduler,
 because the drive alone takes 9 to 10 minutes on average. That depends on which ambulance
@@ -310,28 +312,36 @@ is sent and on how many ambulances there are, not on the order of the queue.
 
 ### Dispatch policy
 
-Severity-weighted average response time in minutes. Lower is better.
+Severity-weighted average response time in minutes. Lower is better. Measured on the
+30-ambulance fleet, with the learned policy trained again for it.
 
 In the simulator, on 100 shifts the model was not trained on:
 
 | Load | Nearest | Lookahead | Learned (RL) |
 |---|---|---|---|
-| Normal | 9.82 | 9.72 | 9.71 |
-| Heavy | 15.52 | 15.44 | 15.37 |
-| Mixed fleets of 8 to 40 ambulances | 20.00 | 19.59 | 19.65 |
+| Normal | 8.22 | 8.04 | 8.06 |
+| Heavy | 12.57 | 12.13 | 12.18 |
+| Sudden burst of calls | 12.77 | 12.41 | 12.43 |
+| Mixed fleets of 8 to 40 ambulances | 12.57 | 12.50 | 12.49 |
 
-On the real system (MySQL, worker pool, row locks), 20 shifts of 60 calls each:
+On the real system (MySQL, worker pool, row locks), 20 shifts of 150 calls each:
 
 | Policy | Response | Compared with nearest |
 |---|---|---|
-| Nearest | 11.55 | |
-| Learned (RL) | 11.25 | 0.30 faster, better on 13 of 20 shifts |
+| Nearest | 12.53 | |
+| Lookahead | 11.99 | 0.53 faster, better on 14 of 20 shifts |
+| Learned (RL) | 11.98 | 0.54 faster (4.3%), better on 14 of 20 shifts |
 
-The learned policy is faster than nearest by about 1 to 3 percent. The gain is small, and
-on the real system it is not yet statistically significant. It gives about the same result
-as the lookahead rule, so the training confirms the rule and does not find a better one.
-With the learned policy switched on, the locking benchmark gives the same result as before:
-12 ambulances used once each and none double-booked.
+The learned policy is faster than nearest by 2 to 3 percent in the simulator and by 4.3
+percent on the real system, where the shifts were busier. On the real system this gain is
+statistically significant; on the earlier fleet of 12 ambulances it was not. It gives about
+the same result as the lookahead rule, so the training confirms the rule and does not find
+a better one. The model trained on the 12-ambulance fleet already gave the same result on
+the 30-ambulance fleet, because its inputs are relative (minutes and shares of calls), not
+tied to the number of ambulances.
+
+With the learned policy switched on, the locking benchmark on the 30-ambulance fleet gives
+the same result as with nearest: all 30 ambulances used once each and none double-booked.
 
 ---
 
@@ -442,7 +452,10 @@ docs/                  ER diagram, concept notes and the Reinforcement Learning 
    ```bash
    python -m sim.seed
    ```
-   This creates the `ambulance_dispatch` database, its tables, 12 ambulances and 4 hospitals.
+   This creates the `ambulance_dispatch` database and its tables, 30 ambulances at stations
+   across Dehradun district, 14 hospitals, and 1,000 finished calls from the last 30 days
+   with the ambulance and hospital each one used. `python -m sim.seed --reset --no-history`
+   leaves the past calls out.
 
 6. **Run the server**
    ```bash
@@ -515,10 +528,10 @@ caller, so everything on the screen is the system itself at work.
 
 | Scene | What it shows |
 |---|---|
-| 1. One emergency | Each step from the call to the hospital. The place, severity, type and number of injured are chosen at the keyboard |
+| 1. One emergency | Each step from the call to the hospital. The place (one of 30, or any position), severity, type and number of injured are chosen at the keyboard |
 | 2. Five callers, one accident | Five calls at the same instant become one incident with five reports and one ambulance |
 | 3. Several injured, three callers | Callers who report 4, 5 and 5 injured get five ambulances, all different |
-| 4. Seventeen emergencies, twelve ambulances | Twelve calls at once get twelve different ambulances. Five more wait, and the scheduler decides who gets each ambulance that becomes free |
+| 4. More emergencies than ambulances | Thirty calls at once, three near each of ten places, get thirty different ambulances. Five more wait, and the scheduler decides who gets each ambulance that becomes free |
 | 5. A call from outside the city | The call is refused and nothing is stored |
 | 6. The fleet and the queue | Every ambulance's status, and the queue, worker and clock counters |
 
@@ -561,10 +574,11 @@ curl -s -X POST http://127.0.0.1:8000/incidents -H "Content-Type: application/js
 ```
 
 ```bash
-curl -s http://127.0.0.1:8000/incidents/1
+curl -s http://127.0.0.1:8000/incidents/1052
 ```
 
-The first reply comes back at once. The second shows the ambulance that was assigned and,
+Use the `incident_id` from the first reply. Right after a reset it is 1052, because the
+1,000 past calls take the first 1,051 rows. The first reply comes back at once. The second shows the ambulance that was assigned and,
 after about 15 seconds, the hospital. The server terminal prints each step of the trip.
 The ambulance is free again after about 30 seconds.
 
@@ -636,18 +650,20 @@ python -m rl.pg check
 python -m rl.pg eval
 ```
 
-The first checks the simulator. The second checks that the learned policy, at its starting
-weights, makes the same choice as the lookahead rule. The third compares nearest, lookahead
-and learned on shifts the model was not trained on.
+The first checks the simulator, and that the learned policy was trained for the fleet in
+`sim/seed.py`. The second checks that the learned policy, at its starting weights, makes the
+same choice as the lookahead rule. The third compares nearest, lookahead and learned on
+shifts the model was not trained on.
 
-To train again (about 9 minutes; it rewrites `app/policy/learned_weights.json`):
+To train again (about 13 minutes; it rewrites `app/policy/learned_weights.json`):
 
 ```bash
 python -m rl.pg train
 ```
 
 To compare the policies on the real system, stop the server first. This starts its own
-server and resets the database, and it takes about 12 minutes for 6 shifts.
+server and resets the database, and it takes about 13 minutes for 6 shifts. Keep the laptop
+awake while it runs; if it sleeps, the times come out wrong.
 
 ```bash
 python -m bench.policy_ab --seeds 6
@@ -681,8 +697,8 @@ start it as usual.
 * A dispatch cannot be cancelled once it has been made.
 * The learned policy improves the response time only slightly. It was trained on simulated
   calls with assumed busy areas, not on real ambulance data.
-* The trained weights fit the speed and the service area set in `.env`. If either changes,
-  train again with `python -m rl.pg train`.
+* The trained weights fit the speed and the service area set in `.env` and the fleet in
+  `sim/seed.py`. If any of these changes, train again with `python -m rl.pg train`.
 * Waiting calls are retried by the simulation clock, so the clock must be running.
 * The system runs as one server process. The queue and the duplicate check's lock are in
   memory, so running several servers side by side needs Redis first.

@@ -47,6 +47,7 @@ from sqlalchemy import create_engine, text
 
 from app.config import get_settings
 from bench.loadtest import reset_database
+from sim.seed import STATIONS
 
 SCHEDULERS = ("fifo", "priority", "llf")
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
@@ -204,7 +205,7 @@ def run(scheduler: str, stream: list[tuple[float, dict]], scale: float, port: in
 
 def print_report(results: list[Result], calls: int, minutes: float, scale: float) -> None:
     print("\n" + "=" * 78)
-    print(f"  {calls} calls over {minutes:.0f} simulated minutes  |  12 ambulances  "
+    print(f"  {calls} calls over {minutes:.0f} simulated minutes  |  {len(STATIONS)} ambulances  "
           f"|  time x{scale:.0f}")
     print("=" * 78)
 
@@ -236,7 +237,7 @@ def print_report(results: list[Result], calls: int, minutes: float, scale: float
 
 def main() -> int:
     mav_parser = argparse.ArgumentParser(description=__doc__)
-    mav_parser.add_argument("--calls", type=int, default=48)
+    mav_parser.add_argument("--calls", type=int, default=100)
     mav_parser.add_argument("--minutes", type=float, default=60.0,
                             help="simulated minutes over which the calls arrive")
     mav_parser.add_argument("--scale", type=float, default=300.0,

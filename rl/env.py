@@ -9,6 +9,7 @@ gets the next ambulance that frees up (highest severity first, then oldest).
 
 import ast
 import heapq
+import json
 import math
 import random
 import re
@@ -19,6 +20,7 @@ from app.geo import haversine_km
 from app.policy import features
 from app.policy.features import (N_ACTIONS, POINTS, SEVERITIES, SPEED_KMPH,
                                  demand_share, encode_state, point_mask, set_demand)
+from app.policy.learned import WEIGHTS_FILE
 
 ROOT = Path(__file__).resolve().parent.parent
 W_SEV = {"CRITICAL": 4.0, "HIGH": 2.0, "MEDIUM": 1.0, "LOW": 0.5}
@@ -27,7 +29,10 @@ LAMBDA = 20.0                                 # weight of the coverage bonus
 FIXED_MINUTES = 0.5 + 5.0 + 5.0               # mirrors lifecycle.PHASE_MINUTES; the two journeys are added per job
 # mirrors scheduling.RESPONSE_TARGET_MINUTES; the default queue scheduler (LLF) works from these
 RESPONSE_TARGET_MINUTES = {"CRITICAL": 8.0, "HIGH": 15.0, "MEDIUM": 30.0, "LOW": 60.0}
-MEAN_JOB_MINUTES = 30.0                       # measured: 18.5 fixed + ~11 min ETA (ambulances end each job at a hospital)
+# Arrival rate = load * fleet / this. Measured as 30 on the first 12-ambulance layout. On the 30-ambulance
+# layout a job takes about 24 min at normal load and 28 at heavy load; kept at 30 so heavy load (0.7 to 0.9)
+# keeps the real fleet about 75% busy instead of overloading it.
+MEAN_JOB_MINUTES = 30.0
 HOTSPOTS = ((30.3255, 78.0413, 0.30), (30.2892, 77.9959, 0.20),    # Clock Tower, ISBT
             (30.3563, 78.0664, 0.15), (30.3320, 77.9412, 0.10))    # Rajpur Road, Prem Nagar
 BACKGROUND = 0.25                             # share of incidents spread uniformly over the city box
@@ -48,8 +53,11 @@ class World:
 
 
 def random_world(rng, fleet=None):
+    """A made-up layout. Stations and hospitals are placed where calls happen, the way a real city places
+    them; spread evenly over the whole district box, most would sit in forest and hills far from any call."""
     box = city_box()
-    pt = lambda: (rng.uniform(box[0], box[1]), rng.uniform(box[2], box[3]))
+    weights = [h[2] for h in HOTSPOTS] + [BACKGROUND]
+    pt = lambda: demand_point(rng, weights, box)
     n = fleet or rng.randint(8, 40)
     return World([pt() for _ in range(n)], [pt() for _ in range(rng.randint(3, 6))])
 
@@ -81,6 +89,16 @@ def real_world():
     return World([(s[2], s[3]) for s in t["STATIONS"]], [(h[1], h[2]) for h in t["HOSPITALS"]])
 
 
+def demand_point(rng, weights, box):
+    """One place where a call happens: near a hotspot, or anywhere in the box (the last weight)."""
+    k = rng.choices(range(len(weights)), weights)[0]
+    if k < len(HOTSPOTS):
+        lat, lon = rng.gauss(HOTSPOTS[k][0], SPREAD_DEG), rng.gauss(HOTSPOTS[k][1], SPREAD_DEG)
+    else:
+        lat, lon = rng.uniform(box[0], box[1]), rng.uniform(box[2], box[3])
+    return min(max(lat, box[0]), box[1]), min(max(lon, box[2]), box[3])
+
+
 def make_incidents(rng, n_amb, n, load=(0.3, 0.8), surge=None):
     """Poisson arrivals at a random load; hotspots plus background; returns [(t, lat, lon, severity)].
     surge = (start_share, end_share, multiplier) multiplies the arrival rate for part of the stream."""
@@ -91,12 +109,7 @@ def make_incidents(rng, n_amb, n, load=(0.3, 0.8), surge=None):
     for i in range(n):
         in_surge = surge and surge[0] <= i / n < surge[1]
         t += rng.expovariate(rate * surge[2] if in_surge else rate)
-        k = rng.choices(range(len(weights)), weights)[0]
-        if k < len(HOTSPOTS):
-            lat, lon = rng.gauss(HOTSPOTS[k][0], SPREAD_DEG), rng.gauss(HOTSPOTS[k][1], SPREAD_DEG)
-        else:
-            lat, lon = rng.uniform(box[0], box[1]), rng.uniform(box[2], box[3])
-        lat, lon = min(max(lat, box[0]), box[1]), min(max(lon, box[2]), box[3])
+        lat, lon = demand_point(rng, weights, box)
         out.append((t, lat, lon, rng.choices(SEVERITIES, SEV_MIX)[0]))
     return out
 
@@ -185,7 +198,7 @@ def run_episode(seed, choose=None, learn=None, world=None, n_incidents=200, load
 
 # Where incidents happen, learned from a long sample of the generator (the real system would use its history).
 _rng = random.Random(2026)
-set_demand([(i[1], i[2]) for i in make_incidents(_rng, 12, 20_000)])
+set_demand([(i[1], i[2]) for i in make_incidents(_rng, real_world().n_amb, 20_000)])
 
 
 def _selfcheck():
@@ -199,8 +212,12 @@ def _selfcheck():
     for sev, minutes in RESPONSE_TARGET_MINUTES.items():
         found = re.search(r"Severity\.%s:\s*([\d.]+)" % sev, sched)
         assert found and float(found.group(1)) == minutes, "scheduling.RESPONSE_TARGET_MINUTES changed: %s" % sev
+    # The learned policy was trained and measured on the fleet in sim/seed.py; if the fleet changes, retrain.
     w = real_world()
-    assert (w.n_amb, len(w.hosp)) == (12, 4), (w.n_amb, len(w.hosp))
+    trained = json.loads(WEIGHTS_FILE.read_text()).get("layout", {"ambulances": 12, "hospitals": 4})
+    assert trained == {"ambulances": w.n_amb, "hospitals": len(w.hosp)}, (
+        "sim/seed.py has %d ambulances and %d hospitals, but %s was trained with %d and %d: run python -m rl.pg train"
+        % (w.n_amb, len(w.hosp), WEIGHTS_FILE.name, trained["ambulances"], trained["hospitals"]))
     # Every incident is served, nobody is served faster than physics allows, and runs are repeatable.
     log = []
     first = run_episode(7, world=w, learn=lambda *x: log.append(x))

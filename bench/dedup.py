@@ -36,6 +36,7 @@ from app.config import get_settings
 from app.core.dedup import dedup_key
 from app.models import IncidentType
 from bench.loadtest import reset_database
+from sim.seed import STATIONS
 
 # (place, latitude, longitude). Coordinates are multiples of the cell size, so
 # every site lies on a cell edge.
@@ -207,7 +208,7 @@ def run(gate_on: bool, accidents: int, callers: int, port: int) -> Result:
 def print_report(results: list[Result], accidents: int, callers: int) -> None:
     print("\n" + "=" * 78)
     print(f"  {accidents} accidents  |  {callers} callers each, all at the same instant  "
-          f"|  12 ambulances")
+          f"|  {len(STATIONS)} ambulances")
     print("=" * 78)
     print(f"\n  {'gate':<6}{'reports':>9}{'merged':>8}{'incidents':>11}"
           f"{'sent':>6}{'EXTRA':>7}{'unserved':>10}{'still free':>12}")

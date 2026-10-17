@@ -12,7 +12,7 @@ Use two terminal windows side by side:
 
 ## 1. Start the system
 
-Window A. Build a fresh database (12 ambulances, 4 hospitals, no incidents):
+Window A. Build a fresh database (30 ambulances, 14 hospitals, 1,000 past calls):
 
 ```
 python -m sim.seed --reset
@@ -44,11 +44,12 @@ an ambulance:
 curl -s -X POST http://127.0.0.1:8000/incidents -H "Content-Type: application/json" -d '{"lat":30.2740,"lon":78.0480,"severity":"CRITICAL","incident_type":"ROAD_ACCIDENT","description":"Accident on Haridwar Bypass"}' | python -m json.tool
 ```
 
-Look the incident up. Use the id from the reply above. It shows the ambulance, and after a
-few seconds the hospital:
+Look the incident up. Use the `incident_id` from the reply above; right after a reset the
+first new call is 1052, because the past calls take the first 1,051 rows. It shows the
+ambulance, and after a few seconds the hospital:
 
 ```
-curl -s http://127.0.0.1:8000/incidents/1 | python -m json.tool
+curl -s http://127.0.0.1:8000/incidents/1052 | python -m json.tool
 ```
 
 Send the same report again while the ambulance is still on its way. The reply says
@@ -206,7 +207,7 @@ uvicorn app.main:app --no-access-log
 Stop the server first (Ctrl+C in Window A). Each benchmark starts its own server and
 resets the database.
 
-Locking. 40 calls at the same instant with locking off, with `FOR UPDATE`, and with
+Locking. 60 calls at the same instant with locking off, with `FOR UPDATE`, and with
 `SKIP LOCKED`. Without locking, ambulances are double-booked:
 
 ```
@@ -315,7 +316,8 @@ SHOW INDEX FROM incidents;
 
 These need no database and no server.
 
-The simulator's own check:
+The simulator's own check. It also checks that the learned policy was trained for the
+fleet in the seed data (30 ambulances, 14 hospitals):
 
 ```
 python -m rl.env

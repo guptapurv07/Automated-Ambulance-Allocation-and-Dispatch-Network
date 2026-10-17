@@ -103,10 +103,12 @@ def paired(a, b):
 
 
 def save(weights, it, dev_gap):
+    real = E.real_world()
     WEIGHTS_FILE.write_text(json.dumps({
         "features": FEATURES, "weights": [round(v, 4) for v in weights],
         "trained_by": "python -m rl.pg train", "iteration": it,
         "dev_change_vs_lookahead_min": round(dev_gap, 4),
+        "layout": {"ambulances": real.n_amb, "hospitals": len(real.hosp)},   # the fleet in sim/seed.py
     }, indent=2) + "\n")
 
 

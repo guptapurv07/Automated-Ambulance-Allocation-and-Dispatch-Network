@@ -65,8 +65,9 @@ class Result:
 
 
 def reset_database() -> None:
+    # Without the past calls: the benchmarks count the rows their own calls create.
     subprocess.run(
-        [sys.executable, "-m", "sim.seed", "--reset"],
+        [sys.executable, "-m", "sim.seed", "--reset", "--no-history"],
         check=True, capture_output=True,
     )
 
@@ -226,7 +227,7 @@ def print_report(results: list[Result], calls: int, workers: int,
 
 def main() -> int:
     mav_parser = argparse.ArgumentParser(description=__doc__)
-    mav_parser.add_argument("--calls", type=int, default=40)
+    mav_parser.add_argument("--calls", type=int, default=60)
     mav_parser.add_argument("--workers", type=int, default=8)
     mav_parser.add_argument("--race-window", type=float, default=20.0,
                             help="milliseconds between read and claim")

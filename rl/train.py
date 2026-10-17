@@ -85,7 +85,9 @@ def main():
     q, visits = train(args.episodes, args.seed, args.gamma)
     OUT.write_text(json.dumps({"q": q, "visits": visits, "episodes": args.episodes, "gamma": args.gamma}))
     print("saved", OUT.relative_to(OUT.parent.parent))
-    evaluate(q, visits, "REAL Dehradun layout (12 ambulances, 4 hospitals) - never seen in training", real_world())
+    w = real_world()
+    evaluate(q, visits, "REAL Dehradun layout (%d ambulances, %d hospitals) - never seen in training"
+             % (w.n_amb, len(w.hosp)), w)
     evaluate(q, visits, "RANDOM layouts, 8-40 ambulances (new seeds)")
 
 

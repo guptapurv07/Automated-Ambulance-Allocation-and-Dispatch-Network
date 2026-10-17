@@ -16,8 +16,8 @@ from app.policy.features import N_ACTIONS, N_STATES
 
 # Fixed before any result was looked at.
 REGIMES = {
-    "normal": dict(world="real", load=(0.3, 0.8)),                                  # the 12-ambulance Dehradun fleet
-    "sparse": dict(world="random", fleet=6, load=(0.3, 0.8)),                       # half as many ambulances, any layout
+    "normal": dict(world="real", load=(0.3, 0.8)),                                  # the Dehradun fleet in sim/seed.py
+    "sparse": dict(world="random", fleet=6, load=(0.3, 0.8)),                       # only 6 ambulances, any layout
     "heavy":  dict(world="real", load=(0.7, 0.9)),                                  # busy fleet
     "surge":  dict(world="real", load=(0.3, 0.6), surge=(0.33, 0.66, 2.5)),         # a burst of calls mid-stream
 }

@@ -34,20 +34,47 @@ from app.geo import haversine_km
 DEFAULT_URL = "http://127.0.0.1:8000"
 SERVER_LOG = Path(__file__).with_name("server.log")
 
-# Named places in Dehradun for the caller to choose from. Positions are
-# approximate, like the stations in sim/seed.py.
+# Named places in and around Dehradun for the caller to choose from, the city
+# first and then the outer areas. Positions are approximate, like the stations
+# in sim/seed.py.
 PLACES: list[tuple[str, float, float]] = [
     ("Paltan Bazaar", 30.3220, 78.0390),
     ("Railway Station", 30.3140, 78.0330),
+    ("Prince Chowk", 30.3150, 78.0370),
+    ("Astley Hall", 30.3290, 78.0470),
+    ("Survey Chowk", 30.3270, 78.0560),
+    ("Kishan Nagar Chowk", 30.3290, 78.0240),
+    ("Bindal Bridge", 30.3240, 78.0300),
     ("Ballupur Chowk", 30.3330, 78.0110),
-    ("Forest Research Institute", 30.3420, 77.9990),
-    ("Graphic Era University", 30.2686, 77.9950),
+    ("Aarghar Chowk", 30.3060, 78.0470),
+    ("Rispana Bridge", 30.2960, 78.0520),
+    ("ISBT Flyover", 30.2870, 77.9990),
     ("Haridwar Bypass", 30.2740, 78.0480),
+    ("Clement Town Market", 30.2660, 78.0100),
+    ("Graphic Era University", 30.2686, 77.9950),
+    ("Forest Research Institute", 30.3420, 77.9990),
+    ("Tapkeshwar Temple", 30.3450, 78.0190),
+    ("Pacific Mall, Rajpur Road", 30.3540, 78.0610),
     ("Mussoorie Diversion", 30.3760, 78.0760),
+    ("Robber's Cave", 30.3790, 78.0570),
+    ("Malsi Deer Park", 30.3850, 78.0780),
+    ("IT Park, Sahastradhara Road", 30.3560, 78.0790),
     ("Sahastradhara Road", 30.3500, 78.0900),
     ("Prem Nagar Market", 30.3340, 77.9590),
+    ("Selaqui Industrial Area", 30.3720, 77.8650),
+    ("Vikasnagar Market", 30.4700, 77.7750),
+    ("Mussoorie Mall Road", 30.4570, 78.0770),
+    ("Kempty Falls", 30.4880, 77.9980),
+    ("Lachhiwala", 30.2150, 78.1040),
     ("Doiwala", 30.1790, 78.1230),
+    ("Jolly Grant Airport", 30.1880, 78.1830),
 ]
+
+
+def place(name: str) -> tuple[str, float, float]:
+    """The entry in PLACES with this name."""
+    return next(mav_p for mav_p in PLACES if mav_p[0] == name)
+
 
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
 TYPES: list[tuple[str, str]] = [
@@ -61,23 +88,36 @@ TYPES: list[tuple[str, str]] = [
 ]
 TYPE_NAMES = dict(TYPES)
 
-# Scene 4, part 1: (place, severity, type, latitude, longitude). Three calls
-# close together in each of four places, so the three all have the same nearest
-# ambulance. They differ in type, so the duplicate check does not merge them:
-# these are twelve separate emergencies.
+# Scene 4, part 1: three calls close together in each of ten places spread over
+# the district, so the three at one place all have the same nearest ambulance.
+# The three differ in type, so the duplicate check does not merge them: these
+# are thirty separate emergencies, one for each ambulance in the fleet.
+BURST_PLACES: list[tuple[str, float, float]] = [
+    ("Clock Tower", 30.3255, 78.0413),
+    ("ISBT", 30.2892, 77.9959),
+    ("Rajpur Road", 30.3563, 78.0664),
+    ("Prem Nagar", 30.3320, 77.9412),
+    ("Raipur", 30.3241, 78.1086),
+    ("Clement Town", 30.2666, 78.0064),
+    ("Selaqui", 30.3696, 77.8558),
+    ("Doiwala", 30.1786, 78.1203),
+    ("Mussoorie", 30.4598, 78.0644),
+    ("Vikasnagar", 30.4686, 77.7736),
+]
+# (severity, type), taken three at a time for each place in turn.
+BURST_MIX: list[tuple[str, str]] = [
+    ("CRITICAL", "CARDIAC"), ("MEDIUM", "INJURY"), ("LOW", "OTHER"),
+    ("HIGH", "ROAD_ACCIDENT"), ("LOW", "INJURY"), ("CRITICAL", "BREATHING"),
+    ("MEDIUM", "PREGNANCY"), ("HIGH", "FIRE"), ("LOW", "OTHER"),
+    ("CRITICAL", "ROAD_ACCIDENT"), ("HIGH", "CARDIAC"), ("MEDIUM", "BREATHING"),
+]
+# Where the three callers at one place stand, in degrees from it (about 100 m).
+BURST_OFFSETS: list[tuple[float, float]] = [(0.0007, 0.0007), (-0.0007, -0.0005), (0.0005, -0.0008)]
+# (place, severity, type, latitude, longitude)
 BURST_CALLS: list[tuple[str, str, str, float, float]] = [
-    ("Clock Tower", "CRITICAL", "CARDIAC", 30.3262, 78.0420),
-    ("Clock Tower", "MEDIUM", "INJURY", 30.3248, 78.0402),
-    ("Clock Tower", "LOW", "OTHER", 30.3270, 78.0399),
-    ("ISBT", "HIGH", "ROAD_ACCIDENT", 30.2899, 77.9966),
-    ("ISBT", "LOW", "INJURY", 30.2885, 77.9948),
-    ("ISBT", "CRITICAL", "BREATHING", 30.2903, 77.9945),
-    ("Rajpur Road", "MEDIUM", "PREGNANCY", 30.3570, 78.0671),
-    ("Rajpur Road", "HIGH", "FIRE", 30.3556, 78.0653),
-    ("Rajpur Road", "LOW", "OTHER", 30.3574, 78.0650),
-    ("Prem Nagar", "CRITICAL", "ROAD_ACCIDENT", 30.3327, 77.9419),
-    ("Prem Nagar", "HIGH", "CARDIAC", 30.3313, 77.9401),
-    ("Prem Nagar", "MEDIUM", "BREATHING", 30.3331, 77.9398),
+    (mav_name, *BURST_MIX[(3 * mav_k + mav_j) % len(BURST_MIX)], mav_lat + mav_d[0], mav_lon + mav_d[1])
+    for mav_k, (mav_name, mav_lat, mav_lon) in enumerate(BURST_PLACES)
+    for mav_j, mav_d in enumerate(BURST_OFFSETS)
 ]
 # Scene 4, part 2: (severity, type, latitude, longitude). Five calls that arrive
 # while the fleet is busy, the least serious first.
@@ -339,7 +379,7 @@ class Demo:
     def scene_one_call(self, scripted: bool = False) -> None:
         heading("SCENE 1   One emergency, from the call to the hospital")
         if scripted:
-            mav_place, mav_lat, mav_lon = PLACES[1]
+            mav_place, mav_lat, mav_lon = place("Railway Station")
             mav_severity, mav_type, mav_patients = "CRITICAL", "CARDIAC", 1
         else:
             mav_place, mav_lat, mav_lon = ask_place()
@@ -372,7 +412,7 @@ class Demo:
 
     def scene_many_callers(self) -> None:
         heading("SCENE 2   Five people report the same accident")
-        mav_place, mav_lat, mav_lon = PLACES[5]
+        mav_place, mav_lat, mav_lon = place("Haridwar Bypass")
         # Five bystanders standing a few metres apart, calling at the same instant.
         mav_callers = [(mav_lat + mav_k * 0.00004, mav_lon + mav_k * 0.00003, f"98970000{mav_k:02d}")
                        for mav_k in range(5)]
@@ -424,7 +464,7 @@ class Demo:
 
     def scene_many_patients(self) -> None:
         heading("SCENE 3   One accident, several critically injured, three callers")
-        mav_place, mav_lat, mav_lon = PLACES[3]
+        mav_place, mav_lat, mav_lon = place("Forest Research Institute")
         self.wait_for_fleet(5)
         print(f"  A bus accident near {mav_place}. Three people call, and they do not agree on\n"
               "  how many are injured.\n")
@@ -482,8 +522,9 @@ class Demo:
     # --- scene 4 ------------------------------------------------------------
 
     def scene_many_emergencies(self) -> None:
-        heading("SCENE 4   Seventeen emergencies, twelve ambulances")
-        self.wait_for_fleet(12)
+        mav_fleet = len(self.fleet())
+        heading(f"SCENE 4   {len(BURST_CALLS) + len(LATE_CALLS)} emergencies, {mav_fleet} ambulances")
+        self.wait_for_fleet(mav_fleet)
         mav_started = time.monotonic()
         mav_running = self.part_same_instant(mav_started)
         if mav_running is None:
@@ -493,39 +534,48 @@ class Demo:
         self.part_while_busy(mav_started, mav_running)
 
     def part_same_instant(self, started: float) -> list[int] | None:
-        """Part 1: twelve calls at once that compete for the same ambulances.
+        """Part 1: one call for every free ambulance, all at once, competing for the
+        same nearest ambulances.
 
         Returns the dispatches now running, or None if an ambulance was given
         to two calls.
         """
         mav_free = self.free_count()
-        print(f"  Part 1. {len(BURST_CALLS)} calls arrive at the same instant: three near each of four places.\n"
+        mav_calls = BURST_CALLS[:mav_free]
+        mav_places = list(dict.fromkeys(mav_call[0] for mav_call in mav_calls))
+        print(f"  Part 1. {len(mav_calls)} calls arrive at the same instant, three near each of "
+              f"{len(mav_places)} places.\n"
               f"  The three calls at one place all have the same nearest ambulance. "
               f"{count(mav_free, 'ambulance')} free.\n")
 
-        with ThreadPoolExecutor(max_workers=len(BURST_CALLS)) as mav_pool:
+        with ThreadPoolExecutor(max_workers=len(mav_calls)) as mav_pool:
             mav_futures = [mav_pool.submit(self.report, mav_lat, mav_lon, severity=mav_sev, incident_type=mav_type)
-                           for _, mav_sev, mav_type, mav_lat, mav_lon in BURST_CALLS]
+                           for _, mav_sev, mav_type, mav_lat, mav_lon in mav_calls]
             mav_ids = [mav_f.result().json()["incident_id"] for mav_f in mav_futures]
 
         # A call whose nearest ambulances were all taken by other calls a moment
         # earlier is tried again on the next clock tick, so allow a few seconds.
         mav_rows: list[dict] = []
-        mav_until = time.monotonic() + 8.0
+        mav_until = time.monotonic() + 15.0
         while time.monotonic() < mav_until:
             mav_rows = [self.client.get(f"/incidents/{mav_id}").json() for mav_id in mav_ids]
-            if sum(1 for mav_row in mav_rows if mav_row["dispatch"]) >= min(len(BURST_CALLS), mav_free):
+            if sum(1 for mav_row in mav_rows if mav_row["dispatch"]) >= len(mav_calls):
                 break
             time.sleep(0.2)
 
-        print(f"  {'call':<6}{'place':<13}{'severity':<10}{'type':<19}{'ambulance':<11}{'distance':<10}")
-        print(paint("  " + "-" * 67, "dim"))
-        for mav_number, (mav_row, mav_call) in enumerate(zip(mav_rows, BURST_CALLS), start=1):
-            if mav_row["dispatch"]:
-                mav_got = f"{mav_row['ambulance']['call_sign']:<11}{mav_row['dispatch']['distance_km']:.1f} km"
-            else:
-                mav_got = paint("waiting", "yellow")
-            print(f"  {mav_number:<6}{mav_call[0]:<13}{mav_call[1]:<10}{TYPE_NAMES[mav_call[2]]:<19}{mav_got}")
+        # One line per place: which ambulance each of its three calls got.
+        print(f"  {'place':<14}{'ambulances given to its three calls, with the distance'}")
+        print(paint("  " + "-" * 64, "dim"))
+        for mav_name in mav_places:
+            mav_given = []
+            for mav_row, mav_call in zip(mav_rows, mav_calls):
+                if mav_call[0] != mav_name:
+                    continue
+                if mav_row["dispatch"]:
+                    mav_given.append(f"{mav_row['ambulance']['call_sign']} {mav_row['dispatch']['distance_km']:4.1f} km")
+                else:
+                    mav_given.append(paint(f"{'waiting':<14}", "yellow"))
+            print(f"  {mav_name:<14}" + "   ".join(f"{mav_g:<14}" for mav_g in mav_given))
 
         mav_used = [mav_row["ambulance"]["call_sign"] for mav_row in mav_rows if mav_row["dispatch"]]
         mav_twice = sorted({mav_sign for mav_sign in mav_used if mav_used.count(mav_sign) > 1})
@@ -553,7 +603,7 @@ class Demo:
         print(f"\n  Part 2. {count(mav_free, 'ambulance')} free now. {len(LATE_CALLS)} more calls arrive, "
               "the least serious first:\n")
         mav_waiting: dict[int, tuple[int, str]] = {}   # incident id -> (call number, severity)
-        for mav_number, (mav_sev, mav_type, mav_lat, mav_lon) in enumerate(LATE_CALLS, start=len(BURST_CALLS) + 1):
+        for mav_number, (mav_sev, mav_type, mav_lat, mav_lon) in enumerate(LATE_CALLS, start=len(running) + 1):
             mav_body = self.report(mav_lat, mav_lon, severity=mav_sev, incident_type=mav_type).json()
             mav_waiting[mav_body["incident_id"]] = (mav_number, mav_sev)
             self.event(started, f"Call {mav_number} ({mav_sev})",
@@ -709,8 +759,15 @@ def ask_float(prompt: str) -> float:
 
 def ask_place() -> tuple[str, float, float]:
     print("\n  Where is the emergency?")
-    for mav_number, mav_place in enumerate(PLACES, start=1):
-        print(f"    {mav_number:>2}. {mav_place[0]}")
+    # Two columns, so that the whole list fits on the screen.
+    mav_half = (len(PLACES) + 1) // 2
+    for mav_row in range(mav_half):
+        mav_cells = [
+            f"{mav_i + 1:>4}. {PLACES[mav_i][0]:<30}"
+            for mav_i in (mav_row, mav_row + mav_half)
+            if mav_i < len(PLACES)
+        ]
+        print("".join(mav_cells).rstrip())
     print("     0. Type a latitude and longitude")
     mav_pick = ask_number("Choose", default=1, low=0, high=len(PLACES))
     if mav_pick:
@@ -724,7 +781,7 @@ MENU: list[tuple[str, str]] = [
     ("One emergency, from the call to the hospital", "scene_one_call"),
     ("Five people report the same accident", "scene_many_callers"),
     ("One accident, several critically injured, three callers", "scene_many_patients"),
-    ("Seventeen emergencies, twelve ambulances", "scene_many_emergencies"),
+    ("More emergencies than ambulances", "scene_many_emergencies"),
     ("A call from outside the city", "scene_outside_city"),
     ("The fleet and the queue right now", "scene_fleet"),
 ]

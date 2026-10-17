@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import Incident, IncidentStatus, IncidentType, Severity
 from bench.loadtest import reset_database
+from sim.seed import STATIONS
 
 from rl.env import BACKGROUND, HOTSPOTS, SEV_MIX, SEVERITIES, SPREAD_DEG, W_SEV, city_box
 
@@ -131,7 +132,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--seeds", type=int, default=6)
     p.add_argument("--first", type=int, default=0, help="first stream number, to add new streams to an earlier run")
-    p.add_argument("--calls", type=int, default=60)
+    p.add_argument("--calls", type=int, default=5 * len(STATIONS),
+                   help="calls per stream (default 5 per ambulance, so the fleet is about as busy whatever its size)")
     p.add_argument("--minutes", type=float, default=200.0)
     p.add_argument("--scale", type=float, default=300.0)
     p.add_argument("--beta", type=float, default=1.25)
@@ -139,8 +141,8 @@ def main():
     p.add_argument("--port", type=int, default=8123)
     p.add_argument("--policies", nargs="+", default=list(POLICIES), choices=POLICIES)
     a = p.parse_args()
-    print("\n%d calls over %.0f simulated minutes, 12 ambulances, time x%.0f, %d past incidents seeded, %d streams\n"
-          % (a.calls, a.minutes, a.scale, a.history, a.seeds))
+    print("\n%d calls over %.0f simulated minutes, %d ambulances, time x%.0f, %d past incidents seeded, %d streams\n"
+          % (a.calls, a.minutes, len(STATIONS), a.scale, a.history, a.seeds))
     print("  %-5s %-10s %5s %9s %9s %8s %8s" % ("seed", "policy", "served", "weighted", "mean", "wait", "trip"))
     res = {policy: [] for policy in a.policies}
     for seed in range(a.first, a.first + a.seeds):

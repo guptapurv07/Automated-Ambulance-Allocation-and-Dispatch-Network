@@ -8,14 +8,18 @@
     "rank"
   ],
   "weights": [
-    10.2089,
-    2.3952,
-    0.566,
-    0.2489,
-    0.2997,
-    0.5211
+    10.193,
+    2.3147,
+    0.0654,
+    -0.1754,
+    -0.1512,
+    -0.2588
   ],
   "trained_by": "python -m rl.pg train",
-  "iteration": 475,
-  "dev_change_vs_lookahead_min": -0.0792
+  "iteration": 250,
+  "dev_change_vs_lookahead_min": -0.0377,
+  "layout": {
+    "ambulances": 30,
+    "hospitals": 14
+  }
 }
