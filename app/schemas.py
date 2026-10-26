@@ -65,6 +65,9 @@ class DispatchOut(BaseModel):
     completed_at: datetime | None = None
     distance_km: float
     eta_minutes: float
+    # Wait for a vehicle plus the drive, in simulated minutes; compare it with
+    # the response target for the incident's severity.
+    response_minutes: float | None = None
     status: DispatchStatus
 
 
@@ -159,6 +162,8 @@ class QueueStatsOut(BaseModel):
 class HealthOut(BaseModel):
     status: str
     database: str
+    # off (REDIS_URL not set), connected or unreachable
+    redis: str = "off"
     locking_mode: str
     queue_scheduler: str = ""
     dispatch_policy: str = ""

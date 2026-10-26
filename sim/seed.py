@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine, func, select, text
 
 from app.config import get_settings
+from app.core import shared
 from app.geo import eta_minutes, haversine_km
 from app.models import (
     Ambulance,
@@ -251,6 +252,11 @@ def seed_history(session, calls: int = HISTORY_CALLS, days: int = HISTORY_DAYS) 
                 completed_at=mav_done,
                 distance_km=round(mav_km, 3),
                 eta_minutes=round(mav_eta, 1),
+                # Wait plus drive. These times are ordinary minutes, not
+                # compressed like a live call's.
+                response_minutes=round(
+                    (mav_assigned - mav_reported).total_seconds() / 60.0 + mav_eta, 1
+                ),
                 status=DispatchStatus.COMPLETED,
             ))
             mav_rows += 1
@@ -284,6 +290,16 @@ def main() -> int:
     from app.db import SessionLocal, engine
 
     if mav_args.reset:
+        # The rebuilt tables number their rows from 1 again, so a queue entry
+        # left in Redis from before would name a different incident. Cleared
+        # first: if Redis does not answer, nothing has been touched yet.
+        if shared.enabled():
+            try:
+                print(f"  Redis: {shared.clear_namespace()} keys of this database cleared")
+            except shared.REDIS_ERRORS as exc:
+                print(f"\n  Redis did not answer ({exc}); nothing was reset.", file=sys.stderr)
+                print("  Start Redis (redis-server) and run the reset again.\n", file=sys.stderr)
+                return 1
         Base.metadata.drop_all(engine)
         print("  existing tables dropped")
 

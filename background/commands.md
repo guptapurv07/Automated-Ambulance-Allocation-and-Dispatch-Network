@@ -77,6 +77,26 @@ The whole fleet with each ambulance's status:
 curl -s http://127.0.0.1:8000/ambulances | python -m json.tool
 ```
 
+The latest incidents, newest first. `?status=`, `?severity=`, `?limit=` and `?offset=` filter
+and page the list:
+
+```
+curl -s "http://127.0.0.1:8000/incidents?limit=5" | python -m json.tool
+```
+
+The hospitals:
+
+```
+curl -s http://127.0.0.1:8000/hospitals | python -m json.tool
+```
+
+The latest dispatches. `response_minutes` is the wait plus the drive, to compare with the
+target (CRITICAL 8, HIGH 15, MEDIUM 30, LOW 60):
+
+```
+curl -s "http://127.0.0.1:8000/dispatches?limit=3" | python -m json.tool
+```
+
 The queue, the worker threads and the clock:
 
 ```
@@ -292,10 +312,10 @@ injured, and `parent_id` links the rows of one accident:
 SELECT id, incident_type, severity, status, report_count, patients, parent_id FROM incidents ORDER BY id DESC LIMIT 12;
 ```
 
-Which ambulance went to which incident and which hospital it used:
+Which ambulance went to which incident, which hospital it used, and the response time:
 
 ```
-SELECT d.id, d.incident_id, a.call_sign, h.name AS hospital, d.distance_km, d.eta_minutes, d.status FROM dispatches d JOIN ambulances a ON a.id = d.ambulance_id LEFT JOIN hospitals h ON h.id = d.hospital_id ORDER BY d.id DESC LIMIT 12;
+SELECT d.id, d.incident_id, a.call_sign, h.name AS hospital, d.distance_km, d.eta_minutes, d.response_minutes, d.status FROM dispatches d JOIN ambulances a ON a.id = d.ambulance_id LEFT JOIN hospitals h ON h.id = d.hospital_id ORDER BY d.id DESC LIMIT 12;
 ```
 
 The unique constraint and the foreign keys on `dispatches`:
@@ -337,7 +357,103 @@ python -m rl.pg eval
 
 ---
 
-## 9. If something does not work
+## 9. Two servers with Redis
+
+One server keeps its queue, the duplicate check's lock and its clock in its own memory. With
+Redis, several servers share all three and work as one system. Stop the server in Window A
+(Ctrl+C) first.
+
+Window C. Start Redis and leave it running:
+
+```
+redis-server
+```
+
+Window A. The first server, on port 8000:
+
+```
+REDIS_URL=redis://127.0.0.1:6379/0 uvicorn app.main:app --port 8000 --no-access-log
+```
+
+Window D. The second server, on port 8001:
+
+```
+REDIS_URL=redis://127.0.0.1:6379/0 uvicorn app.main:app --port 8001 --no-access-log
+```
+
+The first one to start logs `this process now runs the clock`: only that server moves the
+ambulances. The other logs `another process runs the clock`. Both log the
+`Redis at 127.0.0.1:6379/0` line.
+
+Window B. Send a call to the second server. The `picked up` line can appear in either
+server's log, because both take calls from the same queue:
+
+```
+curl -s -X POST http://127.0.0.1:8001/incidents -H "Content-Type: application/json" -d '{"lat":30.3255,"lon":78.0413,"severity":"HIGH","incident_type":"CARDIAC"}' | python -m json.tool
+```
+
+The health check shows `"redis": "connected"`:
+
+```
+curl -s http://127.0.0.1:8001/health | python -m json.tool
+```
+
+The queue shows `"backend": "redis"`, and under `clock`, `"leader"` says whether this server
+runs the clock:
+
+```
+curl -s http://127.0.0.1:8001/queue | python -m json.tool
+```
+
+What Redis holds for this database:
+
+```
+redis-cli --scan --pattern 'ambulance:*'
+```
+
+The clock's lease: the server holding it, and the seconds before it runs out unless renewed:
+
+```
+redis-cli GET ambulance:ambulance_dispatch:lease:clock
+```
+
+```
+redis-cli TTL ambulance:ambulance_dispatch:lease:clock
+```
+
+Every command the servers send to Redis, live (Ctrl+C to stop). Run the demonstration in
+another window to see the queue and the lock at work:
+
+```
+redis-cli MONITOR
+```
+
+Stop the server that runs the clock (Ctrl+C in its window). Within 5 seconds the other one
+logs `this process now runs the clock` and the ambulances keep moving.
+
+Measured: two servers without Redis and with it. Stop both servers first; it starts its own
+and resets the database:
+
+```
+python -m bench.multiserver
+```
+
+Back to one server without Redis. Stop both servers, then reset and start as usual:
+
+```
+python -m sim.seed --reset
+```
+
+```
+uvicorn app.main:app --no-access-log
+```
+
+---
+
+## 10. If something does not work
+
+"REDIS_URL is set but Redis does not answer": Redis is not running. Start it with
+`redis-server` in its own window, or start the server without `REDIS_URL`.
 
 The reset hangs: a MySQL window still has an open transaction. Type `ROLLBACK;` and
 `exit` there.

@@ -37,8 +37,9 @@ A policy only ranks the candidates; the locking underneath stays the same.
 | Dispatch policies: nearest, lookahead, and one trained by Reinforcement Learning | Built |
 | Benchmarks for locking, duplicates, scheduling and dispatch policy | Built |
 | Terminal demonstration | Built |
-| Dashboard (React, Leaflet map) | Planned |
-| Redis, Docker, deployment on AWS | Planned |
+| Several server processes side by side, sharing state through Redis | Built |
+| Dashboard (React, Leaflet map) | In progress |
+| Docker, deployment on AWS | Planned |
 
 ---
 
@@ -156,6 +157,8 @@ Problem B is mutual exclusion enforced by a **row lock**.
 | Critical section, race condition | The allocation transaction; shown with locking switched off in the benchmark |
 | Deadlock prevention and recovery | Rows are always locked in ascending id order, so no circular wait can form. If MySQL still reports a deadlock, the call is tried again without waiting for locks |
 | Scheduling | FIFO, priority, and Least Laxity First with a response deadline per severity |
+| Mutual exclusion across processes | With Redis, the duplicate check's lock is also a key in Redis, set only if it does not exist (`SET NX`) and with a lease, so it holds across server processes (`app/core/shared.py`) |
+| Leader election | With Redis, only the process that holds the clock's lease runs the clock; if it stops, the lease runs out and another process takes over |
 
 ### Database Concepts
 
@@ -188,6 +191,45 @@ A call that has been accepted is never dropped.
   database, and it is put back on the queue at the next start.
 * **Lifecycle steps.** A step is decided only on data read after the row lock is held, so
   a manual step and the clock cannot both act on the same old state.
+* **Redis stops answering** (with several servers). Each server carries on alone, as a single
+  server does: calls are still accepted and served, and `/health` shows `degraded`. When
+  Redis is back, the servers share again by themselves.
+
+---
+
+## Several Servers Side by Side (Redis)
+
+One server process keeps three things in its own memory: the queue, the duplicate check's
+lock and the simulation clock. That is all one process needs. Two processes started side by
+side (two servers on one database, or `uvicorn --workers 2`) would each have their own copy:
+
+| Kept in one process | What goes wrong with two processes |
+|---|---|
+| Duplicate check's lock | Two callers of one accident reach different processes, and each process creates an incident and sends an ambulance |
+| Queue | A call is ordered only against the calls of its own process, so priority holds per process, not across the system |
+| Simulation clock | Both processes move the same ambulances; every step is tried twice |
+
+With `REDIS_URL` set, all processes share one copy of each, in Redis:
+
+* **The lock** is a key set only if it does not exist yet (`SET NX`), to a value only the
+  holder knows, with a 10-second lease, so a process that dies holding it frees it. It is
+  given back by a script that checks the value and deletes the key in one step.
+* **The queue** is a sorted set: the member is the incident id and the score is the
+  scheduler's order (arrival number for FIFO; severity, then arrival, for priority; deadline
+  minus travel time for Least Laxity First). A worker of any process takes the lowest score
+  with `BZPOPMIN`, which Redis carries out in one step, so two workers never take the same
+  call. Adding a call is one Lua script, and a call already waiting is not added twice.
+* **The clock** runs only in the process that holds the clock's lease, renewed every tick.
+  If that process stops, the lease runs out after 5 seconds and another process takes over.
+  Every 10 seconds it also looks for an accepted call that is in no queue and has no
+  ambulance, which happens if a server stops just after taking it or Redis restarts. Found
+  twice in a row, the call is queued again.
+
+MySQL stays the record of every call, and its row locks and unique keys still decide every
+allocation; Redis only coordinates the processes. Allocation never needed Redis: a row lock
+in MySQL holds across processes, while a lock in a process's memory does not. Without
+`REDIS_URL` nothing changes and the `redis` package is not used. See
+[Running several servers](#running-several-servers) for the commands.
 
 ---
 
@@ -224,14 +266,15 @@ result. The full account is in [`docs/RL_PLAN.md`](docs/RL_PLAN.md).
 | `ambulances` | Call sign, station, base and current position, status |
 | `hospitals` | Name, position, bed capacity |
 | `incidents` | Position, type, severity, status, report time, duplicate key, report count, number of patients, link to the first row of the same accident |
-| `dispatches` | The incident, the ambulance and the hospital of one call, with times, distance and ETA |
+| `dispatches` | The incident, the ambulance and the hospital of one call, with times, distance, ETA and response time |
 
 Relationships: one ambulance has many dispatches; one incident has at most one dispatch;
 one hospital receives many dispatches. An accident with several patients is stored as
 several linked incident rows, one for each patient, so each row still gets exactly one
 ambulance. The ER diagram is in [`docs/ER_Diagram.pdf`](docs/ER_Diagram.pdf). It was drawn
 before the last additions, so it does not yet show `report_count`, `patients`, or the link
-between the rows of one accident (`parent_id`) on `incidents`.
+between the rows of one accident (`parent_id`) on `incidents`, nor `response_minutes` on
+`dispatches`.
 
 **Ambulance lifecycle**
 
@@ -343,6 +386,26 @@ tied to the number of ambulances.
 With the learned policy switched on, the locking benchmark on the 30-ambulance fleet gives
 the same result as with nearest: all 30 ambulances used once each and none double-booked.
 
+### Two servers side by side
+
+Two server processes on one database, calls sent to both at the same instant
+(`python -m bench.multiserver`):
+
+| What was sent | Without Redis | With Redis |
+|---|---|---|
+| 6 accidents, 6 callers each, 3 to each server | 9 incidents, 9 ambulances | 6 incidents, 6 ambulances |
+| 30 different emergencies at once, 15 to each server | 29 sent, 0 double-booked | 30 sent, 0 double-booked |
+| 20 calls while ambulances move | 2 clocks running, 70 steps tried twice | 1 clock, 0 steps tried twice |
+| The same 20 calls | 0 handled by the other server's workers | 10 handled by the other server's workers |
+
+Without Redis, 3 of the 6 accidents got a second incident and a second ambulance: their
+callers stood either side of a grid corner, so the two servers' reports had different keys,
+and the `UNIQUE` key, which only refuses an identical key, could not merge them. With Redis
+the lock is shared and every accident got one ambulance. Allocation was safe in both runs,
+because MySQL's row locks hold across processes. With Redis on and one server, the other
+benchmarks and the six scenes give the same results as without it, and the server accepts a
+burst of 300 calls just as fast (about 30 calls a second in both cases on the test laptop).
+
 ---
 
 ## Technology Stack
@@ -350,11 +413,12 @@ the same result as with nearest: all 30 ambulances used once each and none doubl
 * **Backend:** Python 3.13, FastAPI, Uvicorn, Pydantic
 * **Database:** MySQL 8 or newer (InnoDB), SQLAlchemy 2, PyMySQL
 * **Concurrency:** Python `threading` (own queue and worker thread pool)
+* **Several servers:** Redis 6 or newer, through the `redis` package (only with `REDIS_URL`)
 * **Reinforcement Learning:** policy gradient and the simulator written in plain Python,
   with no machine learning library
 * **Demonstration and benchmarks:** `httpx`, calling the server over its API
-* **Planned:** React, Vite, TypeScript, Tailwind and Leaflet for the dashboard; Redis;
-  Docker; AWS (EC2 and RDS)
+* **In progress:** React, Vite, TypeScript, Tailwind and Leaflet for the dashboard
+* **Planned:** Docker; AWS (EC2 and RDS)
 
 ---
 
@@ -369,8 +433,9 @@ app/
   schemas.py           Request and response shapes
   geo.py               Distance and travel time
   api/
-    incidents.py       Intake (POST /incidents) and incident lookup
+    incidents.py       Intake (POST /incidents), incident list and lookup
     ambulances.py      Fleet listing
+    hospitals.py       Hospital listing
     dispatches.py      Dispatch listing and manual lifecycle steps
     queue.py           Live queue, worker and clock statistics
     health.py          Health check
@@ -383,6 +448,8 @@ app/
     allocation.py      Two-phase allocation with row locks  (Problem B)
     lifecycle.py       Ambulance state machine and hospital choice
     runtime.py         The shared queue, pool and clock
+    shared.py          What several server processes share in Redis: lock and clock lease
+    redis_queue.py     The dispatch queue in Redis, for several server processes
   policy/
     base.py            The policy interface and the nearest-first policy
     demand.py          Demand map: where past incidents happened
@@ -406,6 +473,7 @@ bench/
   dedup.py             Duplicate check benchmark
   scheduling.py        Scheduler benchmark
   policy_ab.py         Dispatch policies compared on the real system
+  multiserver.py       Two server processes side by side, without and with Redis
 demo/                  Terminal demonstration (python -m demo)
 background/
   commands.md          Every command for showing the background parts, in order
@@ -469,8 +537,8 @@ docs/                  ER diagram, concept notes and the Reinforcement Learning 
    ```
 
 After pulling changes that alter the tables, rebuild the database with
-`python -m sim.seed --reset`. The demonstration says so if the tables are older than the
-code.
+`python -m sim.seed --reset`. The server does not start on tables that are older than the
+code; it names the missing column and gives this command.
 
 ### Settings
 
@@ -490,8 +558,10 @@ All settings live in `.env`. The most useful ones:
 | `AVG_SPEED_KMPH` | `32` | Average ambulance speed used for travel times |
 | `SERVICE_AREA_LAT_MIN`, `_LAT_MAX`, `_LON_MIN`, `_LON_MAX` | `30.10`, `30.50`, `77.75`, `78.25` | The box around Dehradun inside which a call is accepted |
 | `RACE_WINDOW_MS` | `0` | Pause between locking the ambulance rows and assigning one. Zero in normal use; raised only to make a race or a lock visible |
+| `REDIS_URL` | empty | Redis for several server processes, for example `redis://127.0.0.1:6379/0`. Empty: one process, nothing shared |
 
-The server does not start if `QUEUE_SCHEDULER` or `DISPATCH_POLICY` has an unknown value.
+The server does not start if `QUEUE_SCHEDULER` or `DISPATCH_POLICY` has an unknown value,
+or if `REDIS_URL` is set and Redis does not answer.
 
 ---
 
@@ -500,18 +570,26 @@ The server does not start if `QUEUE_SCHEDULER` or `DISPATCH_POLICY` has an unkno
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/incidents` | Report an emergency. Replies `202` with an incident id, or says it is a duplicate. With `patients` it requests one ambulance for each |
+| `GET` | `/incidents` | Incidents, newest first, 100 per page; filter with `?status=` and `?severity=`, page with `?limit=` and `?offset=` |
 | `GET` | `/incidents/{id}` | The incident with its dispatch, ambulance and hospital. With several patients, every patient's ambulance and hospital |
 | `GET` | `/ambulances` | The fleet with position and status; filter with `?status=`, page with `?limit=` and `?offset=` |
+| `GET` | `/hospitals` | The hospitals with position and bed capacity |
 | `GET` | `/dispatches` | Dispatch records, newest first, 100 per page; filter with `?status=`, page with `?limit=` and `?offset=` |
 | `POST` | `/dispatches/{id}/advance` | Move a dispatch forward by one lifecycle step |
 | `POST` | `/dispatches/{id}/complete` | Finish a dispatch and free its ambulance |
-| `GET` | `/queue` | Queue depth, scheduler, worker counters and clock state |
-| `GET` | `/health` | Service and database check, with the locking mode, scheduler and dispatch policy in use |
+| `GET` | `/queue` | Queue depth, scheduler, which queue is in use (memory or Redis), worker counters, and clock state, including whether this process runs the clock |
+| `GET` | `/health` | Service, database and Redis check, with the locking mode, scheduler and dispatch policy in use |
 
 A call needs `lat` and `lon`. Optional fields are `severity` (`CRITICAL`, `HIGH`, `MEDIUM`,
 `LOW`), `incident_type` (`ROAD_ACCIDENT`, `CARDIAC`, `BREATHING`, `INJURY`, `FIRE`,
 `PREGNANCY`, `OTHER`), `patients` (how many people need an ambulance, 1 to 10, default 1),
 `caller_phone` and `description`.
+
+Every dispatch carries `response_minutes`: the wait for an ambulance plus the drive to the
+patient, in simulated minutes, the same figure the server prints as `SERVED`. Compare it
+with the target for the incident's severity: CRITICAL 8, HIGH 15, MEDIUM 30, LOW 60.
+In `GET /incidents`, an accident with several patients appears as one row per patient; the
+further rows carry `parent_id`, the id of the accident's first row.
 
 ---
 
@@ -640,6 +718,36 @@ python -m bench.scheduling
 
 They print the tables shown under Results.
 
+### Running several servers
+
+Install Redis once (`brew install redis` on macOS, `sudo apt install redis-server` on
+Ubuntu), start it in its own terminal, and set it in `.env`:
+
+```bash
+redis-server
+```
+
+```
+REDIS_URL=redis://127.0.0.1:6379/0
+```
+
+Then start two servers in two terminals, or two processes behind one port with
+`uvicorn app.main:app --workers 2 --no-access-log`:
+
+```bash
+uvicorn app.main:app --port 8000 --no-access-log
+uvicorn app.main:app --port 8001 --no-access-log
+```
+
+One of them logs `this process now runs the clock`; stop it, and within 5 seconds the other
+logs the same. A call sent to either port can be handled by either server's workers. The
+benchmark compares two servers without and with Redis; stop the servers first, because it
+starts its own and resets the database:
+
+```bash
+python -m bench.multiserver
+```
+
 ### 5. The dispatch policy and Reinforcement Learning
 
 These three need no database and no server, and they finish in under a minute.
@@ -700,8 +808,15 @@ start it as usual.
 * The trained weights fit the speed and the service area set in `.env` and the fleet in
   `sim/seed.py`. If any of these changes, train again with `python -m rl.pg train`.
 * Waiting calls are retried by the simulation clock, so the clock must be running.
-* The system runs as one server process. The queue and the duplicate check's lock are in
-  memory, so running several servers side by side needs Redis first.
+* Without `REDIS_URL` the system runs as one server process: the queue, the duplicate
+  check's lock and the clock are in its memory. With it, several processes share them;
+  this was tested with two processes on one laptop, not across several machines.
+* While Redis is not answering, each server works alone, so two servers can again send two
+  ambulances to one accident. A call is never lost: it is stored in MySQL before it is
+  queued, and a call that was never dispatched is queued again when a server starts.
+* The queue in Redis lives in memory. A call can drop out of it while it is waiting for a
+  worker, if Redis restarts or a server stops just after taking the call. The call stays
+  recorded in MySQL, and the clock finds it within about 20 seconds and queues it again.
 * Tested with bursts of 3000 calls and with 1000 ambulances and 200,000 past calls in the
   tables. The simulation clock keeps its pace up to about 100 ambulances on calls at once
   at the default 60x speed; with more than that it falls behind.

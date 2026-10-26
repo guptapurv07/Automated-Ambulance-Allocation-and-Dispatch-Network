@@ -19,7 +19,7 @@ the contention that the row locking exists to resolve.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status as http_status
+from fastapi import APIRouter, Depends, HTTPException, Query, status as http_status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
@@ -29,7 +29,7 @@ from app.core.queue import QueueClosed
 from app.core.runtime import dispatch_queue
 from app.core.scheduling import fleet_positions, make_request
 from app.db import get_session
-from app.models import Dispatch, Incident
+from app.models import Dispatch, Incident, IncidentStatus, Severity
 from app.schemas import (
     AllocationResult,
     AmbulanceOut,
@@ -189,6 +189,33 @@ def report_incident(
         ),
         poll=f"/incidents/{incident.id}",
     )
+
+
+@router.get("", response_model=list[IncidentOut])
+def list_incidents(
+    status: IncidentStatus | None = Query(
+        default=None, description="Filter by incident status"
+    ),
+    severity: Severity | None = Query(default=None, description="Filter by severity"),
+    limit: int = Query(default=100, ge=1, le=1000, description="Rows per page"),
+    offset: int = Query(default=0, ge=0, description="Rows to skip"),
+    session: Session = Depends(get_session),
+) -> list[Incident]:
+    """Incidents, newest first, one page at a time.
+
+    An accident with several patients appears as one row per patient: the
+    further patients' rows carry `parent_id`, the id of the accident's first
+    row, which holds the number of patients and of callers.
+    """
+    # Newest first by primary key, as for dispatches: ids follow the order
+    # of creation, and the primary key needs no extra index to sort by.
+    mav_stmt = select(Incident).order_by(Incident.id.desc())
+    if status is not None:
+        mav_stmt = mav_stmt.where(Incident.status == status)
+    if severity is not None:
+        mav_stmt = mav_stmt.where(Incident.severity == severity)
+    mav_stmt = mav_stmt.limit(limit).offset(offset)
+    return list(session.execute(mav_stmt).scalars().all())
 
 
 @router.get("/{incident_id}", response_model=AllocationResult)

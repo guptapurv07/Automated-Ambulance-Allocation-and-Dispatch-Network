@@ -35,10 +35,15 @@ together could both find nothing and both create an incident. Two guards
 protect it.
 
   1. `_gate_lock`, a mutex. Only one report at a time runs the check and the
-     create, so the second always sees what the first one wrote.
+     create, so the second always sees what the first one wrote. It lives in
+     this process's memory, so with several server processes it is also taken
+     in Redis (REDIS_URL, see app/core/shared.py): then one report at a time
+     across every process.
   2. A UNIQUE index on `incidents.dedup_key`. The database itself refuses a
      second incident with the same key, whichever thread or process tries.
-     This holds even if something gets past the mutex.
+     This holds even if something gets past the mutex. It catches only
+     reports with exactly the same key, though; two callers either side of a
+     cell edge have different keys, and only the mutex merges those.
 
 A key lives only while its incident can still take in reports. It is cleared
 when the ambulance leaves the scene with the patient (see
@@ -67,6 +72,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core import shared
 from app.core.queue import SEVERITY_RANK
 from app.models import Incident, IncidentType, Severity
 
@@ -186,7 +192,9 @@ def register_report(
     mav_candidates = candidate_keys(lat, lon, incident_type, mav_now)
 
     # --- the critical section -------------------------------------------
-    with _gate_lock:
+    # The threads of this process first, then, with Redis, the processes:
+    # only one thread per process ever waits for the shared lock.
+    with _gate_lock, shared.held("dedup-gate"):
         mav_existing = _find_open_incident(session, mav_candidates)
         if mav_existing is None:
             mav_existing = _insert_unless_taken(session, mav_incident)

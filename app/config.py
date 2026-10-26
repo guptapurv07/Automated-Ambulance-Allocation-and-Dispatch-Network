@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     # I/O-bound on database waits, so threads genuinely overlap despite the GIL.
     worker_pool_size: int = 4
 
+    # Redis, for running several server processes side by side, for example
+    # redis://127.0.0.1:6379/0. They then share one dispatch queue, one lock
+    # for the duplicate check and one simulation clock (app/core/shared.py).
+    # Empty, the default, keeps all three in this process's memory, which is
+    # all a single server needs.
+    redis_url: str = ""
+
     # --- Service area -------------------------------------------------------
     # The project covers one city. A call from outside this box is refused at
     # intake: without the check, a wrong coordinate sent an ambulance on a trip

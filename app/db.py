@@ -11,10 +11,11 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
+from app.models import Base
 
 settings = get_settings()
 
@@ -75,3 +76,26 @@ def get_session() -> Iterator[Session]:
     """FastAPI dependency yielding a request-scoped session."""
     with session_scope() as mav_session:
         yield mav_session
+
+
+def missing_columns() -> list[str]:
+    """What the code needs that the tables in MySQL do not have yet.
+
+    Each entry is "table.column", or just "table" for a table that does not
+    exist. Tables made by an older version of the code fail only when a call
+    first touches the missing column, so the server checks this at start-up.
+    Raises if the database cannot be reached.
+    """
+    mav_inspector = inspect(engine)
+    mav_missing: list[str] = []
+    for mav_table in Base.metadata.sorted_tables:
+        if not mav_inspector.has_table(mav_table.name):
+            mav_missing.append(mav_table.name)
+            continue
+        mav_have = {mav_column["name"] for mav_column in mav_inspector.get_columns(mav_table.name)}
+        mav_missing += [
+            f"{mav_table.name}.{mav_column.name}"
+            for mav_column in mav_table.columns
+            if mav_column.name not in mav_have
+        ]
+    return mav_missing

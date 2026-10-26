@@ -204,9 +204,15 @@ class DispatchQueue:
         with self._condition:
             return len(self._pending)
 
+    def incident_ids(self) -> set[int]:
+        """The incidents waiting right now."""
+        with self._condition:
+            return {mav_request.incident_id for mav_request in self._pending}
+
     def stats(self) -> dict[str, int | str]:
         with self._condition:
             return {
+                "backend": "memory",
                 "scheduler": self._scheduler.name,
                 "depth": len(self._pending),
                 "peak_depth": self._peak_depth,

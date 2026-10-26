@@ -24,13 +24,14 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
+from app.core import shared
 from app.core.allocation import NoAmbulanceAvailable, allocate_ambulance
 from app.core.queue import DispatchQueue, DispatchRequest
 from app.core.scheduling import (
@@ -120,16 +121,29 @@ def _dispatch(request: DispatchRequest) -> None:
         # benchmark reads to compare the three schedulers.
         mav_response = response_minutes(mav_incident, mav_dispatch, mav_settings)
         mav_target = RESPONSE_TARGET_MINUTES[mav_incident.severity]
+        mav_id, mav_severity = mav_incident.id, mav_incident.severity.value
+        mav_trip = mav_dispatch.eta_minutes
+
+        # The same figure is kept on the dispatch, for the dashboard. The
+        # ambulance is already assigned and committed, so a failure here costs
+        # only the figure, not the dispatch.
+        try:
+            mav_dispatch.response_minutes = round(mav_response, 1)
+            mav_session.commit()
+        except Exception:
+            mav_session.rollback()
+            logger.warning("incident=%s response time could not be stored", mav_id, exc_info=True)
+
         # waited = time until a vehicle was assigned, which is the part the
         # scheduler controls. trip = the drive, which depends on which vehicle
         # was sent.
         logger.info(
             "incident=%s SERVED  severity=%s waited=%.1fmin trip=%.1fmin "
             "response=%.1fmin target=%.0fmin %s",
-            mav_incident.id,
-            mav_incident.severity.value,
-            mav_response - mav_dispatch.eta_minutes,
-            mav_dispatch.eta_minutes,
+            mav_id,
+            mav_severity,
+            mav_response - mav_trip,
+            mav_trip,
             mav_response,
             mav_target,
             "ON TIME" if mav_response <= mav_target else "LATE",
@@ -321,3 +335,55 @@ def requeue_waiting_incidents(queue: DispatchQueue) -> int:
     for mav_request in mav_requests:
         queue.put(mav_request)
     return len(mav_requests)
+
+
+# A call is looked at only once it is this old: a new call is between its
+# commit and its place in the queue for a few milliseconds.
+LOST_AFTER_SECONDS = 10.0
+
+
+def requeue_lost_incidents(queue, suspects: set[int]) -> tuple[int, set[int]]:
+    """Queue again the calls lost from the shared queue in Redis.
+
+    With several server processes a call can drop out of the queue while it is
+    still REPORTED: a process stops just after its worker took the call, or
+    Redis restarts and loses what it held. Nothing else would look at such a
+    call until a server starts again.
+
+    The clock calls this every few seconds. A call that is REPORTED but neither
+    waiting in the queue nor dispatched is a suspect. It may only be in a
+    worker's hands at that moment, so it is queued again only if it is still a
+    suspect at the next look, by when a worker would long have finished with
+    it. Even then, a second worker that takes it finds it handled already, or
+    is refused a second dispatch by the unique key on dispatches.incident_id.
+
+    Returns how many calls were queued again, and the suspects for next time.
+    """
+    mav_settings = get_settings()
+    mav_cutoff = datetime.now() - timedelta(seconds=LOST_AFTER_SECONDS)
+    with session_scope() as mav_session:
+        mav_reported = mav_session.execute(
+            select(Incident)
+            .where(Incident.status == IncidentStatus.REPORTED, Incident.reported_at < mav_cutoff)
+            .order_by(Incident.reported_at, Incident.id)
+        ).scalars().all()
+        if not mav_reported:
+            return 0, set()
+        try:
+            mav_waiting = queue.waiting([mav_i.id for mav_i in mav_reported])
+        except shared.REDIS_ERRORS:
+            return 0, suspects  # cannot tell now; look again next time
+        mav_now_suspect = {mav_i.id for mav_i in mav_reported if mav_i.id not in mav_waiting}
+        mav_lost = [mav_i for mav_i in mav_reported if mav_i.id in mav_now_suspect & suspects]
+        if not mav_lost:
+            return 0, mav_now_suspect
+        mav_fleet = fleet_positions(mav_session)
+        mav_requests = [make_request(mav_i, mav_fleet, mav_settings) for mav_i in mav_lost]
+
+    for mav_request in mav_requests:
+        queue.put(mav_request)
+        logger.warning(
+            "incident=%s was accepted but had dropped out of the queue; queued again",
+            mav_request.incident_id,
+        )
+    return len(mav_requests), mav_now_suspect - {mav_r.incident_id for mav_r in mav_requests}

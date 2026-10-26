@@ -204,6 +204,13 @@ class Dispatch(Base):
     distance_km: Mapped[float] = mapped_column(Float)
     eta_minutes: Mapped[float] = mapped_column(Float)
 
+    # Minutes from the call until the ambulance reaches the patient: the wait
+    # for a vehicle plus the drive. Stored when the ambulance is assigned,
+    # because the timestamps alone cannot give it: a live call runs at
+    # SIM_TIME_SCALE (60 simulated minutes per real minute by default), while
+    # the past calls loaded by sim/seed.py are in ordinary minutes.
+    response_minutes: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     # Indexed: the simulation clock looks up the ACTIVE dispatches every tick.
     # They are a handful of rows among all the finished ones, and without an
     # index that lookup reads the whole history each time.
