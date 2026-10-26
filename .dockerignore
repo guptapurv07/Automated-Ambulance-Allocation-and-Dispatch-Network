@@ -1,0 +1,12 @@
+# Kept out of the image. .env above all: the password must never be built into it.
+.env
+.git
+venv
+.venv
+**/__pycache__
+**/*.pyc
+**/*.log
+**/.DS_Store
+*.rdb
+docs
+frontend

@@ -1,0 +1,68 @@
+# The whole system with one command, from this folder:
+#
+#     docker compose up --build
+#
+#   app     the dispatch server, on http://localhost:8000 (API docs at /docs)
+#   mysql   the database; its data is kept in the mysql-data volume
+#   redis   what several server processes share (see app/core/shared.py)
+#
+# Settings come from the .env file in this folder, the same one the server
+# reads when it runs without Docker. DB_PASSWORD there is also the password
+# of the MySQL inside Docker, which is separate from any MySQL already
+# installed on the computer.
+
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      # Inside Docker the database and Redis are the other two containers,
+      # reached by their service names. These replace the values in .env.
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_NAME: ambulance_dispatch
+      REDIS_URL: redis://redis:6379/0
+      # Containers run on UTC; this keeps log times and stored times in
+      # Indian time, as when the server runs on the laptop.
+      TZ: ${TZ:-Asia/Kolkata}
+    ports:
+      - "8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in the .env file}
+      TZ: ${TZ:-Asia/Kolkata}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    # Reachable from this computer only, for the mysql client and the row-lock
+    # demonstration, on 3307 so it does not clash with a MySQL already
+    # running on 3306. Never open it to the internet.
+    ports:
+      - "127.0.0.1:3307:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h 127.0.0.1 -u root --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  mysql-data:

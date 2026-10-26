@@ -38,8 +38,9 @@ A policy only ranks the candidates; the locking underneath stays the same.
 | Benchmarks for locking, duplicates, scheduling and dispatch policy | Built |
 | Terminal demonstration | Built |
 | Several server processes side by side, sharing state through Redis | Built |
+| Docker: the server, MySQL and Redis started with one command | Built |
 | Dashboard (React, Leaflet map) | In progress |
-| Docker, deployment on AWS | Planned |
+| Deployment on AWS | Planned |
 
 ---
 
@@ -417,8 +418,9 @@ burst of 300 calls just as fast (about 30 calls a second in both cases on the te
 * **Reinforcement Learning:** policy gradient and the simulator written in plain Python,
   with no machine learning library
 * **Demonstration and benchmarks:** `httpx`, calling the server over its API
+* **Containers:** Docker and Docker Compose
 * **In progress:** React, Vite, TypeScript, Tailwind and Leaflet for the dashboard
-* **Planned:** Docker; AWS (EC2 and RDS)
+* **Planned:** AWS (EC2)
 
 ---
 
@@ -478,6 +480,10 @@ demo/                  Terminal demonstration (python -m demo)
 background/
   commands.md          Every command for showing the background parts, in order
 docs/                  ER diagram, concept notes and the Reinforcement Learning report
+Dockerfile             The server's image
+docker-compose.yml     The server, MySQL and Redis together (docker compose up)
+docker/start.sh        How the server starts in its container
+.dockerignore          What is kept out of the image (.env above all)
 ```
 
 ---
@@ -539,6 +545,41 @@ docs/                  ER diagram, concept notes and the Reinforcement Learning 
 After pulling changes that alter the tables, rebuild the database with
 `python -m sim.seed --reset`. The server does not start on tables that are older than the
 code; it names the missing column and gives this command.
+
+### Running with Docker
+
+Docker can run the server, MySQL and Redis together, in place of steps 2, 3, 5 and 6. It
+needs Docker Desktop, or on macOS Colima (`brew install colima docker docker-compose`, then
+`colima start`), and the `.env` file of step 4 with `DB_PASSWORD` set. That password also
+becomes the password of the MySQL inside Docker, which is separate from any MySQL already
+installed.
+
+```bash
+docker compose up --build -d
+```
+
+The first start downloads the images and builds the server's image (about two minutes),
+then creates the tables and loads the data. The API is then at
+**http://127.0.0.1:8000/docs**, and the demonstration runs as usual, from the laptop or
+from inside the container:
+
+```bash
+python -m demo
+docker compose exec app python -m demo
+```
+
+| What | Command |
+|---|---|
+| The state of the three containers | `docker compose ps` |
+| The server's log | `docker compose logs -f app` |
+| Reset the data | `docker compose stop app`, then `docker compose run --rm app python -m sim.seed --reset`, then `docker compose start app` |
+| MySQL client | `mysql -h 127.0.0.1 -P 3307 -u root -p ambulance_dispatch` |
+| Stop everything, keeping the data | `docker compose down` |
+| Stop everything and delete the data | `docker compose down -v` |
+
+The MySQL inside Docker can be reached only from the computer itself (port 3307), never from
+the network, and the `.env` file is never copied into the image. The server in Docker runs
+with Redis on and logs in Indian time (`TZ` in `.env` changes it).
 
 ### Settings
 

@@ -450,10 +450,98 @@ uvicorn app.main:app --no-access-log
 
 ---
 
-## 10. If something does not work
+## 10. With Docker
+
+The server, MySQL and Redis in three containers, started with one command. Stop a server
+running in Window A first, because Docker uses port 8000 too. On this Mac Docker runs in
+Colima, so start that first; it stays on until it is stopped or the Mac restarts.
+
+```
+colima start
+```
+
+All three containers, from the project folder (the first time takes about two minutes):
+
+```
+docker compose up --build -d
+```
+
+Each container and whether it is healthy:
+
+```
+docker compose ps
+```
+
+The server's log, live (Ctrl+C stops the watching, not the server). This is Window A when
+the server runs in Docker:
+
+```
+docker compose logs -f app
+```
+
+The demonstration, from the laptop as usual:
+
+```
+python -m demo
+```
+
+Or from inside the server's container, which needs nothing installed on the computer:
+
+```
+docker compose exec app python -m demo
+```
+
+MySQL inside Docker, for the row-lock demonstration of section 4. It is on port 3307, so
+use this in place of the `mysql` command there:
+
+```
+mysql -h 127.0.0.1 -P 3307 -u root -p ambulance_dispatch
+```
+
+What the server keeps in Redis:
+
+```
+docker compose exec redis redis-cli --scan --pattern 'ambulance:*'
+```
+
+Reset the data: stop the server, reset, start it again:
+
+```
+docker compose stop app
+```
+
+```
+docker compose run --rm app python -m sim.seed --reset
+```
+
+```
+docker compose start app
+```
+
+Stop everything; the data is kept for the next `docker compose up`:
+
+```
+docker compose down
+```
+
+Stop Colima too, to give its memory back to the Mac:
+
+```
+colima stop
+```
+
+---
+
+## 11. If something does not work
 
 "REDIS_URL is set but Redis does not answer": Redis is not running. Start it with
 `redis-server` in its own window, or start the server without `REDIS_URL`.
+
+"Cannot connect to the Docker daemon": Colima is not running. Start it with `colima start`.
+
+"set DB_PASSWORD in the .env file": the `.env` file has no `DB_PASSWORD`. Copy
+`.env.example` to `.env` and set it. "no configuration file provided": `docker compose` was
+run outside the project folder.
 
 The reset hangs: a MySQL window still has an open transaction. Type `ROLLBACK;` and
 `exit` there.
