@@ -102,6 +102,12 @@ class Ambulance(Base):
         Enum(AmbulanceStatus), default=AmbulanceStatus.AVAILABLE, index=True
     )
 
+    # When the ambulance left the hospital to drive back to its station; null
+    # when it is not on its way back. It is AVAILABLE meanwhile and can be sent
+    # to a new call. Its position stays the hospital's until the clock places
+    # it at its station on arrival (sim/clock.py).
+    returning_since: Mapped[datetime | None] = mapped_column(PreciseDateTime, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()

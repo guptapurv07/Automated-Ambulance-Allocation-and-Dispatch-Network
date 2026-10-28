@@ -10,7 +10,7 @@ from app.config import Settings, get_settings
 from app.core import shared
 from app.db import get_session
 from app.models import Ambulance, AmbulanceStatus
-from app.schemas import HealthOut
+from app.schemas import HealthOut, ServiceAreaOut
 
 logger = logging.getLogger("dispatch.health")
 
@@ -47,9 +47,7 @@ def health(
             status="degraded",
             database="unreachable",
             redis=_redis_status(),
-            locking_mode=settings.locking_mode,
-            queue_scheduler=settings.queue_scheduler,
-            dispatch_policy=settings.dispatch_policy,
+            **_settings_in_use(settings),
         )
 
     mav_redis = _redis_status()
@@ -59,8 +57,24 @@ def health(
         status="degraded" if mav_redis == "unreachable" else "ok",
         database="connected",
         redis=mav_redis,
-        locking_mode=settings.locking_mode,
-        queue_scheduler=settings.queue_scheduler,
-        dispatch_policy=settings.dispatch_policy,
         ambulances_available=mav_available,
+        **_settings_in_use(settings),
     )
+
+
+def _settings_in_use(settings: Settings) -> dict:
+    """The settings a client may need to know. Nothing secret: no password, no Redis URL."""
+    return {
+        "locking_mode": settings.locking_mode,
+        "queue_scheduler": settings.queue_scheduler,
+        "dispatch_policy": settings.dispatch_policy,
+        "dedup_enabled": settings.dedup_enabled,
+        "avg_speed_kmph": settings.avg_speed_kmph,
+        "lock_wait_timeout_seconds": settings.lock_wait_timeout_seconds,
+        "service_area": ServiceAreaOut(
+            lat_min=settings.service_area_lat_min,
+            lat_max=settings.service_area_lat_max,
+            lon_min=settings.service_area_lon_min,
+            lon_max=settings.service_area_lon_max,
+        ),
+    }

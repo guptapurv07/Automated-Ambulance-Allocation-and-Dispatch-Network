@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from app.models import (
     AmbulanceStatus,
@@ -19,6 +20,19 @@ from app.models import (
 MAX_PATIENTS_PER_CALL = 10
 
 
+def _with_zone(value: datetime) -> datetime:
+    """A time as the server's local time, with its zone attached.
+
+    The tables store local times without a zone (MySQL DATETIME). Sent like
+    that, a browser in another zone would read them as its own local time.
+    """
+    return value.astimezone() if value.tzinfo is None else value
+
+
+# A time that leaves the API with its zone, for example 2026-10-28T14:05:09.123+05:30.
+ZonedDateTime = Annotated[datetime, AfterValidator(_with_zone)]
+
+
 class AmbulanceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -28,6 +42,11 @@ class AmbulanceOut(BaseModel):
     current_lat: float
     current_lon: float
     status: AmbulanceStatus
+    # Its station. While `returning_since` is set it is driving back there
+    # from current_lat/current_lon, and free for a new call on the way.
+    base_lat: float
+    base_lon: float
+    returning_since: ZonedDateTime | None = None
 
 
 class HospitalOut(BaseModel):
@@ -60,9 +79,9 @@ class DispatchOut(BaseModel):
     incident_id: int
     ambulance_id: int
     hospital_id: int | None = None
-    assigned_at: datetime
-    phase_started_at: datetime
-    completed_at: datetime | None = None
+    assigned_at: ZonedDateTime
+    phase_started_at: ZonedDateTime
+    completed_at: ZonedDateTime | None = None
     distance_km: float
     eta_minutes: float
     # Wait for a vehicle plus the drive, in simulated minutes; compare it with
@@ -86,7 +105,7 @@ class IncidentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    reported_at: datetime
+    reported_at: ZonedDateTime
     lat: float
     lon: float
     incident_type: IncidentType
@@ -159,6 +178,15 @@ class QueueStatsOut(BaseModel):
     clock: dict
 
 
+class ServiceAreaOut(BaseModel):
+    """The box inside which a call is accepted (SERVICE_AREA_* in .env)."""
+
+    lat_min: float
+    lat_max: float
+    lon_min: float
+    lon_max: float
+
+
 class HealthOut(BaseModel):
     status: str
     database: str
@@ -168,3 +196,8 @@ class HealthOut(BaseModel):
     queue_scheduler: str = ""
     dispatch_policy: str = ""
     ambulances_available: int | None = None
+    # The settings in use, so that a client need not keep its own copy.
+    dedup_enabled: bool = True
+    avg_speed_kmph: float | None = None
+    lock_wait_timeout_seconds: int | None = None
+    service_area: ServiceAreaOut | None = None

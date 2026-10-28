@@ -364,6 +364,11 @@ class Demo:
         mav_amb, mav_dispatch, mav_hospital = unit["ambulance"], unit["dispatch"], unit["hospital"]
         mav_sign = mav_amb["call_sign"]
         mav_where = mav_hospital["name"] if mav_hospital else "the nearest hospital"
+        mav_back = (
+            f", driving back to {mav_amb['station_name']} station"
+            if mav_amb["status"] == "AVAILABLE" and mav_amb.get("returning_since")
+            else ""
+        )
         return [
             f"{mav_sign} from {mav_amb['station_name']} station, "
             f"{mav_dispatch['distance_km']:.1f} km away, about {mav_dispatch['eta_minutes']:.1f} minutes",
@@ -371,8 +376,36 @@ class Demo:
             f"{mav_sign} is at the scene",
             f"{mav_sign} is going to {mav_where}",
             f"{mav_sign} is at {mav_where}",
-            f"{mav_sign} is available",
+            f"{mav_sign} is available{mav_back}",
         ][step]
+
+    def follow_return(self, incident_id: int, started: float, seconds: float = FOLLOW_SECONDS) -> None:
+        """After the call: each ambulance's drive back to its station, until it is there.
+
+        On the way it is free, so it may be sent to another call instead.
+        """
+        mav_watching = {
+            mav_unit["ambulance"]["id"]: mav_unit["ambulance"]
+            for mav_unit in self.units(incident_id)
+            if mav_unit["ambulance"]
+            and mav_unit["ambulance"]["status"] == "AVAILABLE"
+            and mav_unit["ambulance"].get("returning_since")
+        }
+        mav_deadline = time.monotonic() + seconds
+        while mav_watching and time.monotonic() < mav_deadline:
+            for mav_amb in self.fleet():
+                if mav_amb["id"] not in mav_watching:
+                    continue
+                if mav_amb["status"] != "AVAILABLE":
+                    self.event(started, "Sent to a new call",
+                               f"{mav_amb['call_sign']} was given another call on its way back", "yellow")
+                elif not mav_amb["returning_since"]:
+                    self.event(started, "Back at station",
+                               f"{mav_amb['call_sign']} is back at {mav_amb['station_name']} station", "green")
+                else:
+                    continue
+                del mav_watching[mav_amb["id"]]
+            time.sleep(POLL_SECONDS)
 
     # --- scene 1 ------------------------------------------------------------
 
@@ -407,6 +440,7 @@ class Demo:
             self.event(mav_started, "Call received", f"Incident {mav_id}, {mav_severity}, "
                        f"{TYPE_NAMES[mav_type].lower()} at {mav_place}{mav_people}")
         self.follow(mav_id, mav_started)
+        self.follow_return(mav_id, mav_started)
 
     # --- scene 2 ------------------------------------------------------------
 
@@ -700,14 +734,20 @@ class Demo:
         heading("SCENE 6   The fleet and the queue right now")
         mav_fleet = self.fleet()
         print(f"  {'ambulance':<11}{'station':<20}{'status':<14}")
-        print(paint("  " + "-" * 43, "dim"))
+        print(paint("  " + "-" * 56, "dim"))
         for mav_amb in mav_fleet:
             mav_colour = "green" if mav_amb["status"] == "AVAILABLE" else "yellow"
+            mav_state = mav_amb["status"]
+            if mav_state == "AVAILABLE" and mav_amb.get("returning_since"):
+                mav_state = "AVAILABLE, driving back"
             print(f"  {mav_amb['call_sign']:<11}{mav_amb['station_name']:<20}"
-                  f"{paint(mav_amb['status'], mav_colour)}")
+                  f"{paint(mav_state, mav_colour)}")
         mav_free = sum(1 for mav_amb in mav_fleet if mav_amb["status"] == "AVAILABLE")
+        mav_back = sum(1 for mav_amb in mav_fleet
+                       if mav_amb["status"] == "AVAILABLE" and mav_amb.get("returning_since"))
         mav_stats = self.client.get("/queue").json()
-        print(f"\n  {mav_free} of {len(mav_fleet)} ambulances are free.")
+        print(f"\n  {mav_free} of {len(mav_fleet)} ambulances are free"
+              + (f", {mav_back} of them driving back to their station." if mav_back else "."))
         print(f"  Queue    {mav_stats['queue']['depth']} calls waiting for a worker now, "
               f"{mav_stats['queue']['enqueued_total']} queued in total "
               f"(longest queue so far: {mav_stats['queue']['peak_depth']})")

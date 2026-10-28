@@ -78,10 +78,16 @@ curl -s http://127.0.0.1:8000/ambulances | python -m json.tool
 ```
 
 The latest incidents, newest first. `?status=`, `?severity=`, `?limit=` and `?offset=` filter
-and page the list:
+and page the list. Times carry their time zone (`+05:30`):
 
 ```
 curl -s "http://127.0.0.1:8000/incidents?limit=5" | python -m json.tool
+```
+
+One row per accident: an accident with several patients is shown once, by its first row:
+
+```
+curl -s "http://127.0.0.1:8000/incidents?top_level=true&limit=5" | python -m json.tool
 ```
 
 The hospitals:
@@ -103,7 +109,8 @@ The queue, the worker threads and the clock:
 curl -s http://127.0.0.1:8000/queue | python -m json.tool
 ```
 
-The health check, with the locking mode, scheduler and dispatch policy in use:
+The health check, with the settings in use (locking mode, scheduler, dispatch policy,
+duplicate check, average speed, lock wait, service area):
 
 ```
 curl -s http://127.0.0.1:8000/health | python -m json.tool
@@ -130,6 +137,7 @@ Each line is one step of the system. For one call they appear in this order:
 | `SERVED ... ON TIME` or `LATE` | The response time against the target for that severity |
 | `ASSIGNED -> EN_ROUTE`, `EN_ROUTE -> AT_SCENE` and so on | The clock moving the ambulance |
 | `hospital=` | The hospital chosen as the ambulance leaves the scene |
+| `back at its station` | After the call, the ambulance has driven back to its station |
 | `RE-QUEUED` | A call that had to wait is given another try |
 
 The second column, for example `worker-1` or `sim-clock`, is the thread that did the step.

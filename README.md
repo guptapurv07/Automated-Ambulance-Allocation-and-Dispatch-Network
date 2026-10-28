@@ -119,8 +119,9 @@ Problem B is mutual exclusion enforced by a **row lock**.
                                   ▼
                      ┌──────────────────────────┐
                      │     Simulation Clock     │  en route, at scene, nearest
-                     │                          │  hospital, free again; retries
-                     │                          │  calls that are still waiting
+                     │                          │  hospital, free again, back to
+                     │                          │  its station; retries calls
+                     │                          │  that are still waiting
                      └──────────────────────────┘
 ```
 
@@ -140,8 +141,9 @@ Problem B is mutual exclusion enforced by a **row lock**.
    their status is checked again, the first one in the policy's order that is still free
    is assigned, and the transaction commits. *The ranking proposes; the lock disposes.*
 7. **Lifecycle.** A clock thread moves each ambulance through its call. The patient is taken
-   to the hospital nearest to the incident, and the ambulance then becomes free. A call that
-   found no ambulance is put back on the queue when one becomes free.
+   to the hospital nearest to the incident, and the ambulance then becomes free and drives
+   back to its station; it can be sent to a new call on the way. A call that found no
+   ambulance is put back on the queue when one becomes free.
 
 ---
 
@@ -264,7 +266,7 @@ result. The full account is in [`docs/RL_PLAN.md`](docs/RL_PLAN.md).
 
 | Table | Holds |
 |---|---|
-| `ambulances` | Call sign, station, base and current position, status |
+| `ambulances` | Call sign, station, base and current position, status, and since when it has been driving back to its station |
 | `hospitals` | Name, position, bed capacity |
 | `incidents` | Position, type, severity, status, report time, duplicate key, report count, number of patients, link to the first row of the same accident |
 | `dispatches` | The incident, the ambulance and the hospital of one call, with times, distance, ETA and response time |
@@ -275,13 +277,17 @@ several linked incident rows, one for each patient, so each row still gets exact
 ambulance. The ER diagram is in [`docs/ER_Diagram.pdf`](docs/ER_Diagram.pdf). It was drawn
 before the last additions, so it does not yet show `report_count`, `patients`, or the link
 between the rows of one accident (`parent_id`) on `incidents`, nor `response_minutes` on
-`dispatches`.
+`dispatches`, nor `returning_since` on `ambulances`.
 
 **Ambulance lifecycle**
 
 ```
 AVAILABLE → ASSIGNED → EN_ROUTE → AT_SCENE → TRANSPORTING → AT_HOSPITAL → AVAILABLE
 ```
+
+After the hospital the ambulance is AVAILABLE again and drives back to its station, taking as
+long as the distance needs. It can be sent to a new call on the way, which ends the drive
+back. Until it arrives, its position counts as the hospital's.
 
 ---
 
@@ -611,15 +617,15 @@ or if `REDIS_URL` is set and Redis does not answer.
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/incidents` | Report an emergency. Replies `202` with an incident id, or says it is a duplicate. With `patients` it requests one ambulance for each |
-| `GET` | `/incidents` | Incidents, newest first, 100 per page; filter with `?status=` and `?severity=`, page with `?limit=` and `?offset=` |
+| `GET` | `/incidents` | Incidents, newest first, 100 per page; filter with `?status=` and `?severity=`, one row per accident with `?top_level=true`, page with `?limit=` and `?offset=` |
 | `GET` | `/incidents/{id}` | The incident with its dispatch, ambulance and hospital. With several patients, every patient's ambulance and hospital |
-| `GET` | `/ambulances` | The fleet with position and status; filter with `?status=`, page with `?limit=` and `?offset=` |
+| `GET` | `/ambulances` | The fleet with position, station position, status, and `returning_since` while driving back to its station; filter with `?status=`, page with `?limit=` and `?offset=` |
 | `GET` | `/hospitals` | The hospitals with position and bed capacity |
 | `GET` | `/dispatches` | Dispatch records, newest first, 100 per page; filter with `?status=`, page with `?limit=` and `?offset=` |
 | `POST` | `/dispatches/{id}/advance` | Move a dispatch forward by one lifecycle step |
 | `POST` | `/dispatches/{id}/complete` | Finish a dispatch and free its ambulance |
 | `GET` | `/queue` | Queue depth, scheduler, which queue is in use (memory or Redis), worker counters, and clock state, including whether this process runs the clock |
-| `GET` | `/health` | Service, database and Redis check, with the locking mode, scheduler and dispatch policy in use |
+| `GET` | `/health` | Service, database and Redis check, with the settings in use: locking mode, scheduler, dispatch policy, duplicate check, average speed, lock wait and service area |
 
 A call needs `lat` and `lon`. Optional fields are `severity` (`CRITICAL`, `HIGH`, `MEDIUM`,
 `LOW`), `incident_type` (`ROAD_ACCIDENT`, `CARDIAC`, `BREATHING`, `INJURY`, `FIRE`,
@@ -630,7 +636,10 @@ Every dispatch carries `response_minutes`: the wait for an ambulance plus the dr
 patient, in simulated minutes, the same figure the server prints as `SERVED`. Compare it
 with the target for the incident's severity: CRITICAL 8, HIGH 15, MEDIUM 30, LOW 60.
 In `GET /incidents`, an accident with several patients appears as one row per patient; the
-further rows carry `parent_id`, the id of the accident's first row.
+further rows carry `parent_id`, the id of the accident's first row. `?top_level=true` lists
+only the first rows, one per accident, and `GET /incidents/{id}` shows all its patients.
+Every time is sent with its time zone, the server's local time, for example
+`2026-10-28T20:05:34.015+05:30`.
 
 ---
 
@@ -842,7 +851,11 @@ start it as usual.
 * A call from outside the service area is refused. It is not passed on to the service of
   the neighbouring district, which a real control room would do.
 * The patient goes to the nearest hospital; bed capacity is stored but not yet used.
-* After a call the ambulance waits at the hospital; it does not drive back to its station.
+* After a call the ambulance drives back to its station and can be sent to a new call on
+  the way. Until it arrives its position counts as the hospital's, so a call it takes on the
+  way is measured from the hospital, not from where it really is on the road.
+* The simulator that trains the learned policy (`rl/env.py`) still keeps an ambulance at the
+  hospital after a call; it does not yet model the drive back.
 * A dispatch cannot be cancelled once it has been made.
 * The learned policy improves the response time only slightly. It was trained on simulated
   calls with assumed busy areas, not on real ambulance data.

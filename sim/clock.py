@@ -13,6 +13,10 @@ Time is compressed by `sim_time_scale`. At the default of 60, one simulated
 minute elapses per real second, so a call that would occupy a vehicle for
 roughly 25 minutes releases it after about 25 seconds of demo time.
 
+It also ends each ambulance's drive back to its station after a call: once
+the drive has taken as long as the distance needs, the ambulance is placed at
+its station. It is free for a new call all the way.
+
 The clock also drives the retry of incidents that found no vehicle. After
 advancing dispatches, each tick hands waiting incidents back to the dispatch
 queue while vehicles are free. With the clock disabled nothing is retried.
@@ -30,7 +34,7 @@ import threading
 import time
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import joinedload
 
@@ -40,6 +44,7 @@ from app.core.lifecycle import (
     InvalidTransition,
     advance_dispatch,
     phase_duration_minutes,
+    return_minutes,
 )
 from app.core.queue import DispatchQueue
 from app.core.shared import Lease
@@ -111,6 +116,7 @@ class SimulationClock:
                 # Without Redis this process always holds the lease.
                 if self._lease.hold():
                     self._tick()
+                    self._bring_back()
                     self._retry_waiting()
             except Exception:  # a bad tick must not kill the clock thread
                 logger.exception("simulation tick failed")
@@ -165,6 +171,61 @@ class SimulationClock:
                         "dispatch=%s not advanced this tick: %s",
                         mav_dispatch_id,
                         getattr(exc.orig, "args", [exc])[-1],
+                    )
+
+    def _bring_back(self) -> None:
+        """Place every ambulance whose drive back to its station is over at its station."""
+        mav_now = datetime.now()
+        with session_scope() as mav_session:
+            mav_returning = mav_session.execute(
+                select(Ambulance).where(
+                    Ambulance.status == AmbulanceStatus.AVAILABLE,
+                    Ambulance.returning_since.is_not(None),
+                )
+            ).scalars().all()
+            for mav_ambulance in mav_returning:
+                mav_needed = return_minutes(mav_ambulance, self._settings.avg_speed_kmph)
+                mav_driven = (
+                    (mav_now - mav_ambulance.returning_since).total_seconds()
+                    * self._settings.sim_time_scale / 60.0
+                )
+                if mav_driven < mav_needed:
+                    continue
+                try:
+                    # Only if it is still free and still on the same drive back:
+                    # an ambulance given a new call meanwhile is left where it is.
+                    # One UPDATE that checks and moves in a single step, so it
+                    # needs no separate row lock.
+                    mav_moved = mav_session.execute(
+                        update(Ambulance)
+                        .where(
+                            Ambulance.id == mav_ambulance.id,
+                            Ambulance.status == AmbulanceStatus.AVAILABLE,
+                            Ambulance.returning_since == mav_ambulance.returning_since,
+                        )
+                        .values(
+                            current_lat=mav_ambulance.base_lat,
+                            current_lon=mav_ambulance.base_lon,
+                            returning_since=None,
+                        )
+                    ).rowcount
+                    mav_session.commit()
+                except OperationalError as exc:
+                    # Its row stayed locked for too long; try again next tick.
+                    mav_session.rollback()
+                    logger.warning(
+                        "%s not moved to its station this tick: %s",
+                        mav_ambulance.call_sign,
+                        getattr(exc.orig, "args", [exc])[-1],
+                    )
+                    continue
+                if mav_moved:
+                    self._transitions += 1
+                    logger.info(
+                        "%s back at its station  %s  (drive %.1fmin)",
+                        mav_ambulance.call_sign,
+                        mav_ambulance.station_name,
+                        mav_needed,
                     )
 
     def _retry_waiting(self) -> None:

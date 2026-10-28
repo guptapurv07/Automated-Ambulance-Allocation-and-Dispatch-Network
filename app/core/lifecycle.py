@@ -23,6 +23,11 @@ ambulance is placed at the incident. On leaving, the receiving hospital is
 chosen as the one nearest to the incident -- where the patient is, not where
 the ambulance happened to start from -- and recorded on the dispatch. On
 arrival the ambulance is placed at that hospital.
+
+When the call is done the ambulance drives back to its station. It is
+AVAILABLE on the way, so it can be sent to a new call, which ends the drive
+back. Until it arrives its position counts as the hospital's; the clock places
+it at its station when the drive is over (sim/clock.py).
 """
 
 from __future__ import annotations
@@ -121,6 +126,23 @@ def phase_duration_minutes(
             return FALLBACK_TRANSPORT_MINUTES
         return eta_minutes(mav_trip_km, avg_speed_kmph)
     return dispatch.eta_minutes
+
+
+def at_station(ambulance: Ambulance) -> bool:
+    """Is the ambulance at its own station (within about 50 m)?"""
+    return haversine_km(
+        ambulance.current_lat, ambulance.current_lon, ambulance.base_lat, ambulance.base_lon
+    ) < 0.05
+
+
+def return_minutes(ambulance: Ambulance, avg_speed_kmph: float) -> float:
+    """How long the drive from where the ambulance is to its station takes."""
+    return eta_minutes(
+        haversine_km(
+            ambulance.current_lat, ambulance.current_lon, ambulance.base_lat, ambulance.base_lon
+        ),
+        avg_speed_kmph,
+    )
 
 
 def _nearest_hospital(session: Session, lat: float, lon: float) -> Hospital | None:
@@ -232,7 +254,11 @@ def advance_dispatch(
     mav_incident = dispatch.incident
     mav_note = ""
 
-    if mav_upcoming is AmbulanceStatus.AT_SCENE:
+    if mav_upcoming is AmbulanceStatus.EN_ROUTE:
+        # Sent while driving back to its station: it goes to the patient instead.
+        mav_ambulance.returning_since = None
+
+    elif mav_upcoming is AmbulanceStatus.AT_SCENE:
         # The vehicle is now with the patient.
         mav_ambulance.current_lat = mav_incident.lat
         mav_ambulance.current_lon = mav_incident.lon
@@ -270,6 +296,8 @@ def advance_dispatch(
         mav_incident.status = IncidentStatus.RESOLVED
         # Normally cleared already, when the last patient left the scene.
         _stop_taking_reports(session, mav_incident)
+        # Free again, and on its way back to its station unless it is there.
+        mav_ambulance.returning_since = None if at_station(mav_ambulance) else mav_now
 
     session.commit()
 

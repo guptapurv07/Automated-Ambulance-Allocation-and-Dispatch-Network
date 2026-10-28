@@ -197,6 +197,11 @@ def list_incidents(
         default=None, description="Filter by incident status"
     ),
     severity: Severity | None = Query(default=None, description="Filter by severity"),
+    top_level: bool = Query(
+        default=False,
+        description="Only the first row of each incident: one row per accident, "
+        "without the rows of its further patients",
+    ),
     limit: int = Query(default=100, ge=1, le=1000, description="Rows per page"),
     offset: int = Query(default=0, ge=0, description="Rows to skip"),
     session: Session = Depends(get_session),
@@ -205,7 +210,9 @@ def list_incidents(
 
     An accident with several patients appears as one row per patient: the
     further patients' rows carry `parent_id`, the id of the accident's first
-    row, which holds the number of patients and of callers.
+    row, which holds the number of patients and of callers. With
+    `top_level=true` only those first rows are listed; GET /incidents/{id}
+    then shows every patient of one of them.
     """
     # Newest first by primary key, as for dispatches: ids follow the order
     # of creation, and the primary key needs no extra index to sort by.
@@ -214,6 +221,8 @@ def list_incidents(
         mav_stmt = mav_stmt.where(Incident.status == status)
     if severity is not None:
         mav_stmt = mav_stmt.where(Incident.severity == severity)
+    if top_level:
+        mav_stmt = mav_stmt.where(Incident.parent_id.is_(None))
     mav_stmt = mav_stmt.limit(limit).offset(offset)
     return list(session.execute(mav_stmt).scalars().all())
 
