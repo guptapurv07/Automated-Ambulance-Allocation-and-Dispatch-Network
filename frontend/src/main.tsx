@@ -13,6 +13,8 @@ import { TooltipProvider } from "./ui/Tooltip";
 
 // Each page loads on its first visit; Live (with the map) is the heaviest.
 const Live = lazy(() => import("./pages/Live"));
+const Fleet = lazy(() => import("./pages/Fleet"));
+const System = lazy(() => import("./pages/System"));
 const lazyPage = (el: ReactNode) => <Suspense fallback={null}>{el}</Suspense>;
 
 const qc = new QueryClient({
@@ -33,6 +35,8 @@ const router = createBrowserRouter([
     element: <Shell />,
     children: [
       page("Live", lazyPage(<Live />), "/"),
+      page("Fleet", lazyPage(<Fleet />), "/fleet"),
+      page("System", lazyPage(<System />), "/system"),
       page("Not found", <NotFound />, "*"),
     ],
   },
