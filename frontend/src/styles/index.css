@@ -1,0 +1,135 @@
+@import "@fontsource/overpass/300.css";
+@import "@fontsource/overpass/400.css";
+@import "@fontsource/overpass/500.css";
+@import "@fontsource/overpass/600.css";
+@import "@fontsource/overpass-mono/400.css";
+@import "@fontsource/overpass-mono/500.css";
+@import "./tokens.css";
+@import "tailwindcss";
+
+/* Tailwind utilities mapped to the tokens. Older names (card, surface, accent, danger, success) are kept
+   as aliases of the control-room palette so every component resolves to graphite or a severity colour. */
+@theme inline {
+  --color-bg: var(--panel);
+  --color-canvas: var(--bg);
+  --color-shell: var(--bg);
+  --color-app: var(--bg);
+  --color-panel: var(--panel);
+  --color-card: var(--panel);
+  --color-panel-muted: var(--panel-muted);
+  --color-surface: var(--panel-muted);
+  --color-surface-hover: var(--panel-muted);
+  --color-surface-active: var(--panel-pressed);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-border: var(--line);
+  --color-border-strong: var(--line-strong);
+  --color-faint: var(--text-faint);
+  --color-muted: var(--text-muted);
+  --color-text: var(--ink);
+  --color-ink: var(--ink);
+  --color-ink-hover: var(--ink-hover);
+  --color-on-ink: #FFFFFF;
+  --color-accent: var(--ink);
+  --color-accent-hover: var(--ink-hover);
+  --color-on-accent: #FFFFFF;
+  --color-primary: var(--ink);
+  --color-primary-hover: var(--ink-hover);
+  --color-on-primary: #FFFFFF;
+  --color-focus: var(--focus);
+
+  --color-critical: var(--critical);
+  --color-critical-tint: var(--critical-tint);
+  --color-critical-text: var(--critical-text);
+  --color-critical-line: var(--critical-line);
+  --color-warning: var(--warning);
+  --color-warning-tint: var(--warning-tint);
+  --color-warning-line: var(--warning-line);
+  --color-ok: var(--ok);
+  --color-ok-tint: var(--ok-tint);
+  --color-ok-line: var(--ok-line);
+  --color-offline: var(--offline);
+  --color-offline-tint: var(--offline-tint);
+  --color-danger: var(--critical);
+  --color-danger-text: var(--critical-text);
+  --color-danger-soft: var(--critical-tint);
+  --color-warning-text: var(--warning);
+  --color-warning-soft: var(--warning-tint);
+  --color-success: var(--ok);
+  --color-success-text: var(--ok);
+  --color-success-soft: var(--ok-tint);
+  --color-warn: var(--warning);
+  --color-error: var(--critical);
+
+  /* Overpass everywhere, numbers included (tabular); Overpass Mono only for machine identifiers */
+  --font-sans: "Overpass", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Overpass Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* scale: 12 px for tags only, 13 px minimum elsewhere */
+  --text-micro: 12px;
+  --text-micro--line-height: 16px;
+  --text-meta: 13px;
+  --text-meta--line-height: 18px;
+  --text-dense: 14px;
+  --text-dense--line-height: 20px;
+  --text-body: 14px;
+  --text-body--line-height: 20px;
+  --text-section: 15px;
+  --text-section--line-height: 22px;
+  --text-title: 15px;
+  --text-title--line-height: 22px;
+  --text-h2: 18px;
+  --text-h2--line-height: 24px;
+  --text-h2--letter-spacing: -0.005em;
+  --text-page: 28px;
+  --text-page--line-height: 1.15;
+  --text-page--letter-spacing: -0.01em;
+  --text-figure: 24px;
+  --text-figure--line-height: 30px;
+
+  /* square everything: the only round shapes are status dots (.dot) */
+  --radius-chip: 0px;
+  --radius-control: 0px;
+  --radius-panel: 0px;
+  --radius-card: 0px;
+  --radius-shell: 0px;
+
+  /* no elevation shadows; menus alone get --shadow-menu with a hard border */
+  --shadow-card: none;
+  --shadow-raised: none;
+  --shadow-hover: none;
+  --shadow-float: var(--shadow-menu);
+}
+
+@layer base {
+  html { background: var(--bg); color: var(--ink); color-scheme: light; font-family: var(--font-sans); }
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  button, input, select, textarea, optgroup { font: inherit; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  ::selection { background: var(--panel-pressed); }
+  /* sharp geometry everywhere; status dots are the one exception */
+  kbd, code, samp, pre { font-family: inherit; }
+  *, *::before, *::after { border-radius: 0 !important; }
+  .dot { border-radius: 9999px !important; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--line-strong); border: 2px solid var(--bg); }
+}
+
+@layer utilities {
+  .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+  .mono { font-family: var(--font-mono); }      /* machine identifiers only: call signs, incident and dispatch ids */
+  .transition-ui { transition-duration: var(--dur); transition-timing-function: var(--ease); }
+}
+
+/* A new feed row starts tinted and fades over 2 s; nothing else animates in. */
+@keyframes fresh { from { background-color: var(--critical-tint); } to { background-color: transparent; } }
+.fresh { animation: fresh 2s ease-out; }
+@media (prefers-reduced-motion: reduce) { .fresh { animation: none; } }

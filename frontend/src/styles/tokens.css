@@ -1,0 +1,32 @@
+/* Design tokens: an engineered control-room look. Sharp geometry, hairline rules,
+   a cool graphite base, and colour ONLY for status and severity. Components use these names only. */
+
+:root {
+  /* neutrals */
+  --bg: #F2F3F3;              /* app background, behind panels */
+  --panel: #FFFFFF;
+  --panel-muted: #F7F8F8;     /* table headers, hover rows, segmented base */
+  --panel-pressed: #ECEEEF;
+  --line: #DDE0E2;            /* default hairlines */
+  --line-strong: #B8BDC2;     /* input borders, active segment border */
+  --ink: #0F1214;             /* primary text, primary buttons, active nav */
+  --ink-hover: #2A2F33;
+  --text-muted: #5D646B;
+  --text-faint: #959CA3;      /* decoration only: separators, ticks */
+  --focus: #2F6FEB;           /* focus rings and links only */
+
+  /* severity: the only colours in the interface */
+  --critical: #D92D20;  --critical-tint: #FEF0EE;  --critical-line: #F4B8B2;
+  --critical-text: #B42318;   /* red text on white or tint: AA (5.9:1); #D92D20 is for fills, bars and dots */
+  --warning: #B54708;   --warning-tint: #FEF5E7;   --warning-line: #F2C98F;
+  --ok: #157F3D;        --ok-tint: #EAF6EE;        --ok-line: #A9D9B9;
+  --offline: #5D646B;   --offline-tint: #F0F1F2;
+
+  --shadow-menu: 0 4px 12px rgb(0 0 0 / 0.08);   /* dropdowns and menus only */
+  --dur: 120ms;
+  --ease: ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur: 0ms; }
+}
