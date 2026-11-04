@@ -1,5 +1,5 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { api, type Ambulance, type Dispatch, type Health, type Hospital, type IncidentDetail, type QueueStats } from "./client";
+import { api, type Ambulance, type Dispatch, type Health, type Hospital, type Incident, type IncidentStatus, type IncidentDetail, type QueueStats, type Severity } from "./client";
 
 /* The API does not push updates, so the dashboard polls. At the default simulation speed one real second
    is one simulated minute, so ambulances and dispatches are polled every second. */
@@ -29,5 +29,18 @@ export function useIncidentDetails(dispatches: Dispatch[]) {
   return byIncident;
 }
 
+/** One incident, followed every second until its ambulance has finished (or its call was merged away). */
+export const useIncident = (id: number | null) =>
+  useQuery({
+    queryKey: ["incident", id, "live"],
+    queryFn: () => api<IncidentDetail>(`/incidents/${id}`),
+    enabled: id != null,
+    refetchInterval: (q) => (q.state.data?.incident.status === "RESOLVED" ? false : 1000),
+  });
+
 /** The hospitals do not change while the server runs. */
 export const useHospitals = () => useQuery({ queryKey: ["hospitals"], queryFn: () => api<Hospital[]>("/hospitals"), staleTime: Infinity });
+
+/** Incidents, newest first (the API pages them; 1000 is its largest page). */
+export const useIncidents = (f: { status?: IncidentStatus; severity?: Severity; top_level?: boolean; limit?: number; offset?: number } = {}) =>
+  useQuery({ queryKey: ["incidents", "list", f], queryFn: () => api<Incident[]>("/incidents", { query: f }), refetchInterval: 2000, placeholderData: (p) => p });
