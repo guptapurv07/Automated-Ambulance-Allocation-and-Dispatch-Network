@@ -1,0 +1,3 @@
+*.tsbuildinfo
+# The repository's .gitignore ignores every lib/ folder (Python packaging); this one is source code.
+!src/lib/
