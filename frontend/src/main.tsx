@@ -15,9 +15,9 @@ import { TooltipProvider } from "./ui/Tooltip";
 const Live = lazy(() => import("./pages/Live"));
 const Fleet = lazy(() => import("./pages/Fleet"));
 const System = lazy(() => import("./pages/System"));
+const Report = lazy(() => import("./pages/Report"));
 const Incidents = lazy(() => import("./pages/Incidents"));
 const Incident = lazy(() => import("./pages/Incident"));
-const Scenarios = lazy(() => import("./pages/Scenarios"));
 const lazyPage = (el: ReactNode) => <Suspense fallback={null}>{el}</Suspense>;
 
 const qc = new QueryClient({
@@ -38,11 +38,11 @@ const router = createBrowserRouter([
     element: <Shell />,
     children: [
       page("Live", lazyPage(<Live />), "/"),
+      page("Report emergency", lazyPage(<Report />), "/report"),
       page("Incidents", lazyPage(<Incidents />), "/incidents"),
       page("Incident", lazyPage(<Incident />), "/incidents/:id"),
       page("Fleet", lazyPage(<Fleet />), "/fleet"),
       page("System", lazyPage(<System />), "/system"),
-   page("Scenarios", lazyPage(<Scenarios />), "/scenarios"),
       page("Not found", <NotFound />, "*"),
     ],
   },

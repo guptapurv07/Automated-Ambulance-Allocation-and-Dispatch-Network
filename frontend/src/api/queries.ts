@@ -1,5 +1,5 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { api, type Ambulance, type Dispatch, type Health, type Hospital, type Incident, type IncidentStatus, type IncidentDetail, type QueueStats, type Severity } from "./client";
+import { api, type Ambulance, type Dispatch, type Health, type Hospital, type Incident, type IncidentAccepted, type IncidentStatus, type IncidentCreate, type IncidentDetail, type QueueStats, type Severity } from "./client";
 
 /* The API does not push updates, so the dashboard polls. At the default simulation speed one real second
    is one simulated minute, so ambulances and dispatches are polled every second. */
@@ -37,6 +37,9 @@ export const useIncident = (id: number | null) =>
     enabled: id != null,
     refetchInterval: (q) => (q.state.data?.incident.status === "RESOLVED" ? false : 1000),
   });
+
+/** POST /incidents: the call is stored and queued; a worker assigns an ambulance a moment later. */
+export const reportIncident = (body: IncidentCreate) => api<IncidentAccepted>("/incidents", { method: "POST", body });
 
 /** The hospitals do not change while the server runs. */
 export const useHospitals = () => useQuery({ queryKey: ["hospitals"], queryFn: () => api<Hospital[]>("/hospitals"), staleTime: Infinity });

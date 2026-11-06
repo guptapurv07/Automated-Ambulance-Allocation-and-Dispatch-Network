@@ -136,7 +136,8 @@ export default function Live() {
           aside={<>
             <Clock className="text-[14px] font-medium text-ink" />
             {ambulances.data && <StatusDot status={free ? "ok" : "warn"} label={<span className="num text-meta text-muted">{free} of {ambs.length} free</span>} />}
-          </>} />
+          </>}
+          actions={<Button variant="primary" onClick={() => navigate("/report")}>Report emergency</Button>} />
       </div>
 
       <div className="grid flex-1 min-[1100px]:min-h-0 min-[1100px]:grid-cols-[minmax(0,1fr)_380px]">
