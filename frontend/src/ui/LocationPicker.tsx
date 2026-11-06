@@ -1,15 +1,16 @@
 import L from "leaflet";
 import { clsx } from "clsx";
 import { useEffect, useRef } from "react";
-import type { Severity } from "@/api/client";
+import type { Hospital, Severity } from "@/api/client";
 import type { ServiceArea } from "@/lib/domain";
-import { createBaseMap, incidentIcon } from "./CityMap";
+import { createBaseMap, hospitalMarker, incidentIcon } from "./CityMap";
 
 /** Click the map to choose where the emergency is. The pin takes the chosen severity's colour. */
-export function LocationPicker({ value, severity, area, onPick, className }: {
+export function LocationPicker({ value, severity, area, hospitals, onPick, className }: {
   value: { lat: number; lon: number } | null;
   severity: Severity;
   area: ServiceArea;            // outside it, clicks do nothing
+  hospitals?: Hospital[];       // shown for reference; a click on one picks that spot
   onPick: (lat: number, lon: number) => void;
   className?: string;
 }) {
@@ -34,6 +35,13 @@ export function LocationPicker({ value, severity, area, onPick, className }: {
       pin.current = null;
     };
   }, []);   // the area is fixed while the page is open
+
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !hospitals) return;
+    const layer = L.layerGroup(hospitals.map(hospitalMarker)).addTo(m);
+    return () => { layer.remove(); };
+  }, [hospitals]);
 
   // Keep the pin on the chosen position and in view.
   useEffect(() => {

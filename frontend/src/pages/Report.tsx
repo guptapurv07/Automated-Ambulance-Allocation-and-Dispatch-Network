@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError, type IncidentType, type Severity } from "@/api/client";
-import { reportIncident, useHealth } from "@/api/queries";
+import { reportIncident, useHealth, useHospitals } from "@/api/queries";
 import { INCIDENT_TYPE_LABEL, inServiceArea, serviceAreaText, SEVERITIES, SEVERITY_LABEL } from "@/lib/domain";
 import { PLACES } from "@/lib/places";
 import { Button } from "@/ui/Button";
@@ -35,6 +35,7 @@ function ReportForm({ onSent }: { onSent: (id: number) => void }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);   // 503: saved, dispatched when the server is back
   const area = useHealth().data?.service_area;
+  const hospitals = useHospitals().data;
   const outside = !!pos && !!area && !inServiceArea(area, pos.lat, pos.lon);
 
   const choosePlace = (name: string) => {
@@ -112,7 +113,7 @@ function ReportForm({ onSent }: { onSent: (id: number) => void }) {
         <Card>
           <Strip title="Location" aside={pos ? <span className="num">{pos.lat.toFixed(4)}, {pos.lon.toFixed(4)}</span> : "Click the map"} />
           {area ? (
-            <LocationPicker value={pos} severity={severity} area={area} onPick={(lat, lon) => { setPlace(ON_MAP); setPos({ lat, lon }); }}
+            <LocationPicker value={pos} severity={severity} area={area} hospitals={hospitals} onPick={(lat, lon) => { setPlace(ON_MAP); setPos({ lat, lon }); }}
               className="h-[min(640px,calc(100dvh-260px))] min-h-[420px]" />
           ) : <Skeleton className="h-[min(640px,calc(100dvh-260px))] min-h-[420px]" />}
         </Card>
