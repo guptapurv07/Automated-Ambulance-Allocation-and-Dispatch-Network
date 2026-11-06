@@ -8,6 +8,7 @@ import { legOf, minutesLeft } from "@/lib/motion";
 import { useNow } from "@/lib/useNow";
 import { Button } from "@/ui/Button";
 import { CityMap, MapLegend } from "@/ui/CityMap";
+import { SimulatorPanel } from "@/ui/SimulatorPanel";
 import { Card, PageHeader, Strip } from "@/ui/layout";
 import { Banner, Chip, Skeleton, StatusDot } from "@/ui/status";
 
@@ -157,6 +158,7 @@ export default function Live() {
           </Card>
         </div>
         <aside aria-label="Overview" className="grid min-w-0 grid-cols-[minmax(0,1fr)] content-start gap-4 border-t border-line p-4 md:p-6 min-[1100px]:min-h-0 min-[1100px]:overflow-y-auto min-[1100px]:border-l min-[1100px]:border-t-0">
+          <SimulatorPanel />
           <DispatchesPanel dispatches={dispatches} ambulances={ambs} details={details} timeScale={timeScale} />
           <FleetPanel ambulances={ambs} />
           <EnginePanel queue={queue.data} />
