@@ -626,20 +626,27 @@ uvicorn app.main:app --no-access-log
 
 ## 11. With Docker
 
-The server, MySQL and Redis in three containers, started with one command. Stop a server
-running in Window A first, because Docker uses port 8000 too. The dashboard in Window C
-keeps working, because the server in Docker answers on that same port. On this Mac Docker
-runs in Colima, so start that first; it stays on until it is stopped or the Mac restarts.
+The dashboard, the server, MySQL and Redis in four containers, started with one command. This
+is also how the system runs on the AWS server. Stop a server running in Window A first,
+because Docker uses port 8000 too; Window C is not needed, because the dashboard has its own
+container. On this Mac Docker runs in Colima, so start that first; it stays on until it is
+stopped or the Mac restarts.
 
 ```
 colima start
 ```
 
-All three containers, from the project folder (the first time takes about two minutes):
+All four containers, from the project folder (the first time takes about three minutes):
 
 ```
 docker compose up --build -d
 ```
+
+The dashboard is then at **http://localhost**, with no port number. Its container (`web`)
+serves the built pages with nginx and hands every `/api/...` request on to the server.
+
+After a pull that changed the tables, the server container stops at start and its log names
+the missing column; reset the data as shown below.
 
 Each container and whether it is healthy:
 

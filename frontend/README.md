@@ -17,6 +17,10 @@ npm run dev
 Open http://localhost:5173. The dev server forwards every `/api/…` request to the server at
 `http://127.0.0.1:8000`, so the dashboard and the API share one address and need no CORS setup.
 
+With Docker, `docker compose up --build -d` in the project folder builds the dashboard and serves it at
+http://localhost: `Dockerfile` builds the pages, and nginx (`nginx.conf`) serves them and forwards `/api/…`
+to the server in the same way.
+
 ## Pages
 
 | Page | What it shows |

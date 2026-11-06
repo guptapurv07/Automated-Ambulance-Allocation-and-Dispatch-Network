@@ -1,0 +1,7 @@
+# Kept out of the dashboard's image: the packages are installed fresh inside it, and the
+# pages are built there.
+node_modules
+dist
+*.tsbuildinfo
+**/*.log
+**/.DS_Store

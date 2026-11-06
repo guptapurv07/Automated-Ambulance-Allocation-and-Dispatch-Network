@@ -38,7 +38,7 @@ A policy only ranks the candidates; the locking underneath stays the same.
 | Benchmarks for locking, duplicates, scheduling and dispatch policy | Built |
 | Terminal demonstration | Built |
 | Several server processes side by side, sharing state through Redis | Built |
-| Docker: the server, MySQL and Redis started with one command | Built |
+| Docker: the dashboard, the server, MySQL and Redis started with one command | Built |
 | Web dashboard (React, Leaflet map) | Built |
 | Deployment on AWS | Planned |
 
@@ -492,7 +492,7 @@ background/
   commands.md          Every command for showing the background parts, in order
 docs/                  ER diagram, concept notes and the Reinforcement Learning report
 Dockerfile             The server's image
-docker-compose.yml     The server, MySQL and Redis together (docker compose up)
+docker-compose.yml     The dashboard, the server, MySQL and Redis together (docker compose up)
 docker/start.sh        How the server starts in its container
 .dockerignore          What is kept out of the image (.env above all)
 ```
@@ -569,7 +569,8 @@ code; it names the missing column and gives this command.
 
 ### Running with Docker
 
-Docker can run the server, MySQL and Redis together, in place of steps 2, 3, 5 and 6. It
+Docker can run the dashboard, the server, MySQL and Redis together, in place of the steps
+above that install and start them. It
 needs Docker Desktop, or on macOS Colima (`brew install colima docker docker-compose`, then
 `colima start`), and the `.env` file of step 4 with `DB_PASSWORD` set. That password also
 becomes the password of the MySQL inside Docker, which is separate from any MySQL already
@@ -579,10 +580,11 @@ installed.
 docker compose up --build -d
 ```
 
-The first start downloads the images and builds the server's image (about two minutes),
-then creates the tables and loads the data. The API is then at
-**http://127.0.0.1:8000/docs**, and the demonstration runs as usual, from the laptop or
-from inside the container:
+The first start downloads the images and builds the server's and the dashboard's images
+(about three minutes), then creates the tables and loads the data. The dashboard is then at
+**http://localhost**; its container serves the built pages with nginx and hands every `/api/...`
+request on to the server. The API is at **http://127.0.0.1:8000/docs**, from this computer
+only, and the demonstration runs as usual, from the laptop or from inside the container:
 
 ```bash
 python -m demo
@@ -591,15 +593,17 @@ docker compose exec app python -m demo
 
 | What | Command |
 |---|---|
-| The state of the three containers | `docker compose ps` |
+| The state of the four containers | `docker compose ps` |
 | The server's log | `docker compose logs -f app` |
 | Reset the data | `docker compose stop app`, then `docker compose run --rm app python -m sim.seed --reset`, then `docker compose start app` |
 | MySQL client | `mysql -h 127.0.0.1 -P 3307 -u root -p ambulance_dispatch` |
 | Stop everything, keeping the data | `docker compose down` |
 | Stop everything and delete the data | `docker compose down -v` |
 
-The MySQL inside Docker can be reached only from the computer itself (port 3307), never from
-the network, and the `.env` file is never copied into the image. The server in Docker runs
+Only the dashboard (port 80) is open to the network. The server (port 8000) and the MySQL
+inside Docker (port 3307) can be reached only from the computer itself, and the `.env` file
+is never copied into an image. If port 80 is taken, `WEB_PORT=8080` in `.env` moves the
+dashboard to http://localhost:8080. The server in Docker runs
 with Redis on and logs in Indian time (`TZ` in `.env` changes it).
 
 ### Settings
