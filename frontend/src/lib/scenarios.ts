@@ -51,16 +51,17 @@ const BURST_CALLS = BURST_PLACES.flatMap(([name, lat, lon], k) =>
       lon: lon + dLon,
       severity,
       incident_type,
+      patients: 1,
     } as CallInput & { place: string };
   }),
 );
 
 const LATE_CALLS: CallInput[] = [
-  { severity: "LOW", incident_type: "INJURY", lat: 30.3180, lon: 78.0300 },
-  { severity: "LOW", incident_type: "OTHER", lat: 30.3195, lon: 78.0420 },
-  { severity: "MEDIUM", incident_type: "OTHER", lat: 30.3215, lon: 78.0345 },
-  { severity: "HIGH", incident_type: "BREATHING", lat: 30.3150, lon: 78.0380 },
-  { severity: "CRITICAL", incident_type: "CARDIAC", lat: 30.3240, lon: 78.0290 },
+  { severity: "LOW", incident_type: "INJURY", lat: 30.3180, lon: 78.0300, patients: 1 },
+  { severity: "LOW", incident_type: "OTHER", lat: 30.3195, lon: 78.0420, patients: 1 },
+  { severity: "MEDIUM", incident_type: "OTHER", lat: 30.3215, lon: 78.0345, patients: 1 },
+  { severity: "HIGH", incident_type: "BREATHING", lat: 30.3150, lon: 78.0380, patients: 1 },
+  { severity: "CRITICAL", incident_type: "CARDIAC", lat: 30.3240, lon: 78.0290, patients: 1 },
 ];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -108,6 +109,7 @@ export async function runScene2(): Promise<ScenarioResult> {
       lon: place.lon + k * 0.00003,
       severity: "HIGH",
       incident_type: "ROAD_ACCIDENT",
+      patients: 1,
       caller_phone: `98970000${String(k).padStart(2, "0")}`,
       description: `Accident at ${place.name}`,
     }),
@@ -149,6 +151,7 @@ export async function runScene3(): Promise<ScenarioResult> {
   }
 
   const id = lastReply!.incident_id;
+  await waitFor(async () => (await incident(id)).units.every((u) => u.dispatch));
   const detail = await incident(id);
   return {
     title: "Three callers, five patients",
@@ -193,15 +196,16 @@ export async function runScene4(): Promise<ScenarioResult> {
 
   const lateAccepted = await Promise.all(LATE_CALLS.map(report));
   const lateIds = lateAccepted.map((r) => r.incident_id);
-  const served: Array<{ incidentId: number; severity: string; ambulance: string }> = [];
+  const served: Array<{ incidentId: number; severity: string; ambulance: string; assignedAt: string }> = [];
 
   const runningDispatchIds = assigned.map((row) => row.dispatchId);
   for (const dispatchId of runningDispatchIds) {
     await api(`/dispatches/${dispatchId}/complete`, { method: "POST" });
 
+    const before = served.length;
     await waitFor(async () => {
       const rows = await Promise.all(lateIds.map(incident));
-      return rows.some((row) => Boolean(row.dispatch));
+      return rows.filter((row) => Boolean(row.dispatch)).length > before;
     }, 5000);
 
     const rows = await Promise.all(lateIds.map(incident));
@@ -212,11 +216,13 @@ export async function runScene4(): Promise<ScenarioResult> {
           incidentId: row.incident.id,
           severity: row.incident.severity,
           ambulance: row.ambulance.call_sign,
+          assignedAt: row.dispatch.assigned_at,
         });
       }
     }
     if (served.length >= lateIds.length) break;
   }
+  served.sort((a, b) => Date.parse(a.assignedAt) - Date.parse(b.assignedAt));
 
   return {
     title: "Concurrent calls and waiting emergencies",
@@ -236,6 +242,7 @@ export async function runScene5(): Promise<ScenarioResult> {
       lon: 77.2090,
       severity: "CRITICAL",
       incident_type: "ROAD_ACCIDENT",
+      patients: 1,
       description: "Test call outside the service area",
     });
     throw new Error("The server accepted the Delhi call; the expected 422 refusal did not occur.");
@@ -245,7 +252,7 @@ export async function runScene5(): Promise<ScenarioResult> {
     const freeAfter = after.filter((a) => a.status === "AVAILABLE").length;
     return {
       title: "Out-of-area call refused",
-      message: `HTTP 422: ${error.message}. Available ambulances: ${freeBefore} before and ${freeAfter} after.`,
+      message: `HTTP 422: ${error.message.replace(/\.$/, "")}. Available ambulances: ${freeBefore} before and ${freeAfter} after.`,
       details: { freeBefore, freeAfter, refusal: error.message },
     };
   }

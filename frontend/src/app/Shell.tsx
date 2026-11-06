@@ -1,5 +1,5 @@
 import { clsx } from "clsx";
-import { Activity, Ambulance, History, ListChecks, Map as MapIcon, Menu as MenuIcon, PanelLeftClose, PanelLeftOpen, Siren } from "lucide-react";
+import { Activity, Ambulance, FlaskConical, History, ListChecks, Map as MapIcon, Menu as MenuIcon, PanelLeftClose, PanelLeftOpen, Siren } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useMatches, useNavigate } from "react-router-dom";
 import { useAmbulances, useHealth } from "@/api/queries";
@@ -20,6 +20,7 @@ const NAV = [
   { to: "/report", label: "Report emergency", icon: Siren },
   { to: "/incidents", label: "Incidents", icon: ListChecks },
   { to: "/history", label: "History", icon: History },
+  { to: "/scenarios", label: "Scenarios", icon: FlaskConical },
   { to: "/fleet", label: "Fleet", icon: Ambulance },
   { to: "/system", label: "System", icon: Activity },
 ];
