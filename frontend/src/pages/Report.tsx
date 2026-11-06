@@ -6,8 +6,9 @@ import { INCIDENT_TYPE_LABEL, inServiceArea, serviceAreaText, SEVERITIES, SEVERI
 import { PLACES } from "@/lib/places";
 import { Button } from "@/ui/Button";
 import { Field, Input, NumberInput, Segmented, Select } from "@/ui/form";
-import { Card, PageHeader } from "@/ui/layout";
-import { Banner } from "@/ui/status";
+import { Card, PageHeader, Strip } from "@/ui/layout";
+import { LocationPicker } from "@/ui/LocationPicker";
+import { Banner, Skeleton } from "@/ui/status";
 import { toast } from "@/ui/Toast";
 
 /* Report an emergency the way a call taker would. After sending, the incident's own page follows it live. */
@@ -76,9 +77,9 @@ function ReportForm({ onSent }: { onSent: (id: number) => void }) {
       <PageHeader crumbs={[{ label: "Report emergency" }]} title="Report emergency" />
       <div className="grid items-start gap-5 xl:grid-cols-[440px_minmax(0,1fr)]">
         <Card className="grid gap-5 p-6">
-          <Field label="Place">
+          <Field label="Place" hint="Or click the map.">
             <Select label="Place" width="w-full" value={place} onChange={choosePlace}
-              options={[...(place === ON_MAP ? [{ value: ON_MAP, label: "Custom point" }] : []), ...PLACES.map((p) => ({ value: p.name, label: p.name }))]} />
+              options={[...(place === ON_MAP ? [{ value: ON_MAP, label: "Picked on map" }] : []), ...PLACES.map((p) => ({ value: p.name, label: p.name }))]} />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Latitude" htmlFor="lat"><Input id="lat" className="num" inputMode="decimal" value={pos?.lat ?? ""} onChange={(e) => setCoord("lat", e.target.value)} /></Field>
@@ -107,6 +108,13 @@ function ReportForm({ onSent }: { onSent: (id: number) => void }) {
           {error && <Banner kind="error" title="Not accepted">{error}</Banner>}
           {notice && <Banner kind="warning" title="Saved, not dispatched yet">{notice}</Banner>}
           <Button variant="primary" disabled={!pos || outside || sending} onClick={send}>{sending ? "Sending…" : "Dispatch"}</Button>
+        </Card>
+        <Card>
+          <Strip title="Location" aside={pos ? <span className="num">{pos.lat.toFixed(4)}, {pos.lon.toFixed(4)}</span> : "Click the map"} />
+          {area ? (
+            <LocationPicker value={pos} severity={severity} area={area} onPick={(lat, lon) => { setPlace(ON_MAP); setPos({ lat, lon }); }}
+              className="h-[min(640px,calc(100dvh-260px))] min-h-[420px]" />
+          ) : <Skeleton className="h-[min(640px,calc(100dvh-260px))] min-h-[420px]" />}
         </Card>
       </div>
     </div>
