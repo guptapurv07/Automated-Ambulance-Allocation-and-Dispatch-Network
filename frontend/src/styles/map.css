@@ -1,0 +1,32 @@
+/* Map: greyscale streets so that the only colours on screen are the urgency colours of the markers. */
+.leaflet-container { font: inherit; background: var(--panel-muted); }
+.leaflet-tile-pane { filter: grayscale(1) contrast(0.9) brightness(1.04); }
+.leaflet-bar, .leaflet-bar a { border-color: var(--line-strong) !important; box-shadow: none !important; color: var(--ink); }
+.leaflet-control-attribution { font-size: 12px; color: var(--text-muted); }
+.leaflet-tooltip { background: var(--ink); color: #fff; border: 0; box-shadow: none; padding: 4px 8px; font-size: 13px; line-height: 18px; }
+.leaflet-tooltip-top::before { border-top-color: var(--ink); }
+
+.m-icon { background: none; border: 0; }
+/* ambulance: a square, one shape per phase (colour is kept for urgency) */
+.m-amb { position: relative; display: inline-block; width: 12px; height: 12px; flex: none; outline: 1.5px solid #fff; background: var(--ink); }
+.m-amb.free { background: var(--ok); }
+.m-amb.at_scene::after { content: ""; position: absolute; inset: 4px; background: #fff; border-radius: 9999px !important; }
+.m-amb.with_patient::before, .m-amb.with_patient::after { content: ""; position: absolute; background: #fff; }
+.m-amb.with_patient::before { left: 5px; top: 2px; width: 2px; height: 8px; }
+.m-amb.with_patient::after { left: 2px; top: 5px; width: 8px; height: 2px; }
+.m-amb.at_hospital { background: var(--panel); border: 2px solid var(--ink); }
+.m-amb.returning { background: var(--panel); border: 2px solid var(--ok); }
+.m-amb.out { background: var(--panel); border: 1.5px solid var(--offline); }
+/* incident: a diamond in its severity colour */
+.m-inc { display: block; width: 12px; height: 12px; transform: rotate(45deg); background: var(--c); outline: 1.5px solid #fff; }
+/* hospital: a white square with a cross */
+.m-hosp { display: inline-flex; flex: none; width: 16px; height: 16px; align-items: center; justify-content: center; border: 1px solid var(--line-strong); background: var(--panel); color: var(--text-muted); font: 600 13px/1 var(--font-sans); }
+/* a call still waiting for an ambulance pulses */
+.m-inc.waiting { animation: m-wait 1.2s ease-in-out infinite; }
+@keyframes m-wait { 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .m-inc.waiting { animation: none; } }
+
+/* "Show all" control, top right of the map */
+.m-fit { height: 30px; padding: 0 10px; border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink); font: 500 13px var(--font-sans); cursor: pointer; }
+.m-fit:hover { background: var(--panel-muted); }
+.m-icon .m-inc { cursor: pointer; }
