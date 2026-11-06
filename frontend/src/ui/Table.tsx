@@ -1,7 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { clsx } from "clsx";
 import { ArrowDown, ArrowUp } from "lucide-react";
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Checkbox } from "./form";
 
 export interface Column<R> {
@@ -16,6 +16,29 @@ export interface Column<R> {
 }
 
 const ROW_H = 40;
+const FILL_MIN_ROWS = 5;     // with less room than this, a filling table stays this tall and the page scrolls
+
+/** Height from the top of `el` to the bottom of the page's scroll area (<main>), less the page's bottom padding.
+ *  Measured again whenever the window or the page above it changes size. */
+function useRoomBelow(el: RefObject<HTMLElement | null>, on: boolean) {
+  const [room, setRoom] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const node = el.current, main = node?.closest("main");
+    if (!on || !node || !main) return;
+    const page = main.firstElementChild;
+    const measure = () => {
+      const top = node.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop;
+      const pad = page ? parseFloat(getComputedStyle(page).paddingBottom) || 0 : 0;
+      setRoom(Math.floor(main.clientHeight - top - pad - 1));     // 1: the table's bottom border
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(main);
+    if (page) ro.observe(page);
+    return () => ro.disconnect();
+  }, [el, on]);
+  return room;
+}
 
 /** Sortable, virtualised table with a sticky header, optional row selection and keyboard focus.
  *  Laid out with CSS grid so the virtualised rows keep their column widths. */
@@ -29,6 +52,7 @@ export function DataTable<R>({
   activeKey,
   onRowClick,
   height = 360,
+  fill,
   empty,
   label,
 }: {
@@ -41,6 +65,9 @@ export function DataTable<R>({
   activeKey?: string | number | null;
   onRowClick?: (row: R) => void;
   height?: number | string;
+  /** In place of `height`: as tall as the rows, but only down to the bottom of the window; the table then
+   *  scrolls inside and the page does not. */
+  fill?: boolean;
   empty?: ReactNode;
   label: string;
 }) {
@@ -56,6 +83,9 @@ export function DataTable<R>({
   }, [rows, columns, sort]);
 
   const scroller = useRef<HTMLDivElement>(null);
+  const room = useRoomBelow(scroller, !!fill);
+  // Until the room is measured (before the first paint) 15 rows, so the first render stays small.
+  const filled = sorted.length === 0 ? undefined : Math.min(sorted.length * ROW_H, Math.max(FILL_MIN_ROWS * ROW_H, room ?? 15 * ROW_H));
   const v = useVirtualizer({ count: sorted.length, getScrollElement: () => scroller.current, estimateSize: () => ROW_H, overscan: 12 });
   const template = [selectable ? "36px" : null, ...columns.map((c) => c.width ?? "1fr")].filter(Boolean).join(" ");
   const sel = selected ?? new Set();
@@ -95,7 +125,7 @@ export function DataTable<R>({
           );
         })}
       </div>
-      <div ref={scroller} className="overflow-auto" style={{ height }}>
+      <div ref={scroller} className="overflow-auto" style={{ height: fill ? filled : height }}>
         {sorted.length === 0 ? (
           <div className="px-3">{empty}</div>
         ) : (

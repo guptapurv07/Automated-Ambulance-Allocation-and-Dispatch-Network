@@ -1,7 +1,7 @@
 # RL Decision Engine (Stage 8): what was built and what we found
 
-Owner: Kartikey. Last updated 2026-10-14.
-Status: merged into `main` (PR #2 and PR #3). Retrained on 2026-10-14 for the enlarged seed data (30 ambulances, 14 hospitals); what changed is in section 7.
+Owner: Kartikey. Last updated 2026-11-06.
+Status: merged into `main` (PR #2 and PR #3). Retrained on 2026-10-14 for the enlarged seed data (30 ambulances, 14 hospitals); what changed is in section 7. Measured again on the real system with the drive back on 2026-11-06 (section 6.1).
 
 ## 1. Short answer: where is the RL?
 
@@ -80,7 +80,17 @@ All six rows were measured on the first fleet of 12 ambulances and 4 hospitals; 
 
 ## 6. Results
 
-### 6.1 On the 30-ambulance fleet (2026-10-14)
+### 6.1 The real system again, with the drive back (2026-11-06)
+
+Since 2026-10-28 the real system sends each ambulance back to its station after a call. The learned policy was not retrained for that (the simulator still keeps ambulances at the hospital, section 8), so it was measured again on the real system with `bench/policy_ab.py --seeds 20 --policies greedy learned`: the same 20 streams and settings as in 6.2. Every call was served in every run, each run took 41 to 44 seconds, and the laptop did not sleep (`pmset -g log`).
+
+| Comparison | Weighted response | 95% CI | Streams better |
+|---|---|---|---|
+| learned minus greedy | **-0.69 min** (12.16 vs 12.85, -5.4%) | -1.12 to -0.25 | 16 of 20 |
+
+The gain held, and was a little larger than on 2026-10-14 (-0.54 min, 14 of 20). The drive to the patient fell from 12.20 to 11.98 min and the mean wait from 0.52 to 0.45 min. Both policies came out slower than on 2026-10-14 (greedy 12.85 against 12.53, learned 12.16 against 11.98); two runs on different days cannot tell whether that comes from the drive back or from run-to-run variation. The comparison that matters, learned against greedy on the same streams in the same run, held. Lookahead was not measured again.
+
+### 6.2 On the 30-ambulance fleet (2026-10-14)
 
 **Simulator, 100 unseen streams per regime, severity-weighted mean response (minutes), paired:**
 
@@ -110,7 +120,7 @@ On the 30-ambulance fleet the learned policy is significantly faster than greedy
 
 **Locking gate:** `bench.loadtest` with `DISPATCH_POLICY=learned`, 60 calls on 30 ambulances: `for_update` 30 dispatched / 30 vehicles / 0 double-booked / 0 deadlocks; `skip_locked` 27 / 27 / 0; `none` double-books (13 in this run), as it should.
 
-### 6.2 On the first fleet of 12 ambulances and 4 hospitals (2026-10-11)
+### 6.3 On the first fleet of 12 ambulances and 4 hospitals (2026-10-11)
 
 **Simulator, 100 unseen streams per regime, severity-weighted mean response (minutes), paired:**
 
@@ -148,10 +158,10 @@ The mentor asked for bigger seed data, so `sim/seed.py` now has 30 ambulances, 1
 
 ## 8. Limitations (state these in the report)
 
-- **The gain is small**: on the 30-ambulance fleet 2 to 3% in simulation (normal, heavy, surge) and 4.3% on the real system (significant over 20 streams); on the first fleet 1 to 2% and 2.6% (not significant). The oracle allowed 5 to 16% on the first fleet; the rest needs knowledge of future calls.
+- **The gain is small**: on the 30-ambulance fleet 2 to 3% in simulation (normal, heavy, surge) and 4.3% on the real system (significant over 20 streams), 5.4% when measured again with the drive back; on the first fleet 1 to 2% and 2.6% (not significant). The oracle allowed 5 to 16% on the first fleet; the rest needs knowledge of future calls.
 - **Travel time is straight-line distance at a fixed 32 km/h** (`AVG_SPEED_KMPH`). If that changes, retrain with `python -m rl.pg train`.
 - **The learned policy ties the lookahead rule** on both fleets; it does not beat it. RL confirms the rule rather than finding a better one.
 - **The learned policy is linear** (six weights), not a deep network. That is deliberate: with this little signal per decision, a big model would overfit, as the table methods did.
 - **Demand model is assumed** (hotspots, severity mix), not fitted to real EMS data. The simulator has four hotspots; the 1,000 past calls loaded by `sim/seed.py` come from six, and the server's demand map learns from those. The policy reads its inputs from whatever the map holds, so this changes what it sees, not its rule.
-- **The simulator does not model the drive back.** Since 2026-10-28 the real system sends each ambulance back to its station after a call, free for new calls on the way. The simulator still keeps it at the hospital, so the learned policy was trained and measured without the drive back. In a simulator test with nearest dispatch, driving back while free was 1.3 to 1.6% faster than staying at the hospital; jumping back to the station at once was worse (4.3% slower under normal load). Sending a free ambulance to the station that fills the biggest gap in coverage did better still: with the learned policy, 6.8% faster than nearest under heavy load and 5.7% under a surge, but nothing extra under normal load. Modelling the drive back in the simulator, and retraining, comes first in the final phase.
+- **The simulator does not model the drive back.** Since 2026-10-28 the real system sends each ambulance back to its station after a call, free for new calls on the way. The simulator still keeps it at the hospital, so the learned policy was trained without the drive back. Measured again on the real system with it (section 6.1), it still beats nearest, by 5.4%. In a simulator test with nearest dispatch, driving back while free was 1.3 to 1.6% faster than staying at the hospital; jumping back to the station at once was worse (4.3% slower under normal load). Sending a free ambulance to the station that fills the biggest gap in coverage did better still: with the learned policy, 6.8% faster than nearest under heavy load and 5.7% under a surge, but nothing extra under normal load. Modelling the drive back in the simulator, and retraining, comes first in the final phase.
 - **Four workers decide at once**, so a policy's view may be slightly stale; the lock keeps allocation correct.

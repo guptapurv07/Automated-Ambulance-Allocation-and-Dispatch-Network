@@ -14,6 +14,7 @@ import { TooltipProvider } from "./ui/Tooltip";
 // Each page loads on its first visit; Live (with the map) is the heaviest.
 const Live = lazy(() => import("./pages/Live"));
 const Fleet = lazy(() => import("./pages/Fleet"));
+const Hospitals = lazy(() => import("./pages/Hospitals"));
 const System = lazy(() => import("./pages/System"));
 const Report = lazy(() => import("./pages/Report"));
 const Incidents = lazy(() => import("./pages/Incidents"));
@@ -46,6 +47,7 @@ const router = createBrowserRouter([
       page("History", lazyPage(<History />), "/history"),
       page("Scenarios", lazyPage(<Scenarios />), "/scenarios"),
       page("Fleet", lazyPage(<Fleet />), "/fleet"),
+      page("Hospitals", lazyPage(<Hospitals />), "/hospitals"),
       page("System", lazyPage(<System />), "/system"),
       page("Not found", <NotFound />, "*"),
     ],

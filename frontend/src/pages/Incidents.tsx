@@ -71,7 +71,7 @@ export default function Incidents() {
       {isError && <Banner kind="error" title="Cannot load incidents." actions={<Button size="sm" variant="secondary" onClick={() => refetch()}>Retry</Button>}>{(error as Error).message}</Banner>}
       {data && (rows.length ? (
         <div className="overflow-x-auto"><div className="min-w-[1000px]">
-          <DataTable label="Incidents" rows={rows} columns={columns} rowKey={(i) => i.id} height={Math.min(rows.length, 15) * 40}
+          <DataTable label="Incidents" rows={rows} columns={columns} rowKey={(i) => i.id} fill
             onRowClick={(i) => navigate(`/incidents/${i.id}`)} />
         </div></div>
       ) : (

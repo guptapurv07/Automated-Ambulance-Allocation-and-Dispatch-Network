@@ -29,5 +29,7 @@ export function relative(wall: number, now = Date.now() / 1000): string {
 export const wallOf = (iso: string) => Date.parse(iso) / 1000;
 
 export const minutes = (v: number | null | undefined) => (v == null ? "—" : `${v.toFixed(1)} min`);
+/** A share from 0 to 1 as "81.9%" or "100%". */
+export const percent = (v: number | null | undefined) => (v == null ? "—" : `${+(v * 100).toFixed(1)}%`);
 export const km = (v: number | null | undefined) => (v == null ? "—" : `${v.toFixed(1)} km`);
 export const coord = (lat: number, lon: number) => `${lat.toFixed(4)}, ${lon.toFixed(4)}`;

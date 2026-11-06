@@ -200,7 +200,12 @@ export async function runScene4(): Promise<ScenarioResult> {
 
   const runningDispatchIds = assigned.map((row) => row.dispatchId);
   for (const dispatchId of runningDispatchIds) {
-    await api(`/dispatches/${dispatchId}/complete`, { method: "POST" });
+    try {
+      await api(`/dispatches/${dispatchId}/complete`, { method: "POST" });
+    } catch (error) {
+      // 409: that call had already finished by itself, and its ambulance is free anyway.
+      if (!(error instanceof Error) || !("status" in error) || error.status !== 409) throw error;
+    }
 
     const before = served.length;
     await waitFor(async () => {

@@ -1,11 +1,12 @@
 import { useSearchParams } from "react-router-dom";
-import type { Ambulance, Hospital } from "@/api/client";
-import { useAmbulances, useDispatches, useHospitals, useQueueStats } from "@/api/queries";
+import type { Ambulance } from "@/api/client";
+import { useAmbulances, useDispatches, useHealth, useQueueStats } from "@/api/queries";
 import { availability, phaseOf, statusLabel, type Availability } from "@/lib/domain";
 import { coord, wallOf } from "@/lib/format";
+import { minutesLeft, returnLeg } from "@/lib/motion";
 import { useNow } from "@/lib/useNow";
 import { Button } from "@/ui/Button";
-import { PageHeader, SectionTitle } from "@/ui/layout";
+import { PageHeader } from "@/ui/layout";
 import { Banner, EmptyState, Skeleton } from "@/ui/status";
 import { DataTable, type Column } from "@/ui/Table";
 import { Tabs } from "@/ui/Tabs";
@@ -21,6 +22,7 @@ export default function Fleet() {
   const ambulances = useAmbulances();
   const active = useDispatches({ status: "ACTIVE", limit: 1000 });
   const queue = useQueueStats();
+  const avgSpeed = useHealth().data?.avg_speed_kmph;
   const now = useNow(1000);
   const timeScale = queue.data?.clock.time_scale ?? 60;
   const job = new Map((active.data ?? []).map((d) => [d.ambulance_id, d]));
@@ -33,13 +35,25 @@ export default function Fleet() {
     const d = job.get(a.id);
     return d ? (Math.max(0, now - wallOf(d.phase_started_at)) * timeScale) / 60 : null;
   };
+  // Simulated minutes until a returning ambulance is back at its station. Until then the server keeps it at the
+  // hospital, so its position is the hospital's.
+  const toStation = (a: Ambulance) => {
+    const leg = returnLeg(a, avgSpeed);
+    return leg ? minutesLeft(leg, now, timeScale) : null;
+  };
+  const timeText = (a: Ambulance) => {
+    const m = inPhase(a);
+    if (m != null) return `${m.toFixed(1)} min`;
+    const left = toStation(a);
+    return left == null ? "—" : `${left.toFixed(1)} min to station`;
+  };
 
   const columns: Column<Ambulance>[] = [
     { key: "call", header: "Call sign", width: "120px", sortValue: (a) => a.call_sign, cell: (a) => <span className="mono font-medium">{a.call_sign}</span> },
     { key: "station", header: "Station", width: "minmax(160px,1fr)", sortValue: (a) => a.station_name, cell: (a) => <span title={a.station_name}>{a.station_name}</span> },
     { key: "status", header: "Status", width: "170px", sortValue: (a) => statusLabel(a), cell: (a) => <span className="inline-flex items-center gap-2.5"><span aria-hidden className={`m-amb ${phaseOf(a)}`} />{statusLabel(a)}</span> },
     { key: "job", header: "Incident", width: "110px", sortValue: (a) => job.get(a.id)?.incident_id ?? 0, cell: (a) => { const d = job.get(a.id); return d ? <span className="mono">#{d.incident_id}</span> : <span className="text-muted">—</span>; } },
-    { key: "phase", header: "In status", width: "150px", align: "right", numeric: true, sortValue: (a) => inPhase(a) ?? -1, cell: (a) => { const m = inPhase(a); return m == null ? "—" : `${m.toFixed(1)} min`; } },
+    { key: "phase", header: "In status", width: "180px", align: "right", numeric: true, sortValue: (a) => inPhase(a) ?? toStation(a) ?? -1, cell: timeText },
     { key: "pos", header: "Position", width: "170px", align: "right", numeric: true, cell: (a) => coord(a.current_lat, a.current_lon) },
   ];
 
@@ -54,34 +68,11 @@ export default function Fleet() {
         </Banner>
       )}
       {ambulances.data && (
-        <div className="overflow-x-auto"><div className="min-w-[840px]">
-          <DataTable label="Ambulances" rows={rows} columns={columns} rowKey={(a) => a.id} height={Math.max(1, Math.min(rows.length, 15)) * 40}
+        <div className="overflow-x-auto"><div className="min-w-[870px]">
+          <DataTable label="Ambulances" rows={rows} columns={columns} rowKey={(a) => a.id} fill
             empty={<EmptyState title="No ambulance matches this filter." />} />
         </div></div>
       )}
-      <Hospitals ambulances={all} />
     </div>
-  );
-}
-
-/** The hospitals, their beds, and how many ambulances are handing a patient over at each one now. */
-function Hospitals({ ambulances }: { ambulances: Ambulance[] }) {
-  const { data, isPending } = useHospitals();
-  const at = (h: Hospital) => ambulances.filter((a) => a.status === "AT_HOSPITAL" && Math.abs(a.current_lat - h.lat) < 1e-4 && Math.abs(a.current_lon - h.lon) < 1e-4).length;
-  const columns: Column<Hospital>[] = [
-    { key: "name", header: "Hospital", width: "minmax(220px,1fr)", sortValue: (h) => h.name, cell: (h) => <span title={h.name}>{h.name}</span> },
-    { key: "beds", header: "Beds", width: "100px", align: "right", numeric: true, sortValue: (h) => h.bed_capacity, cell: (h) => h.bed_capacity },
-    { key: "here", header: "Handing over", width: "150px", align: "right", numeric: true, sortValue: (h) => at(h), cell: (h) => at(h) || "—" },
-    { key: "pos", header: "Position", width: "170px", align: "right", numeric: true, cell: (h) => coord(h.lat, h.lon) },
-  ];
-  return (
-    <section className="grid gap-3">
-      <SectionTitle title="Hospitals" />
-      {isPending ? <Skeleton className="h-60" /> : (
-        <div className="overflow-x-auto"><div className="min-w-[640px]">
-          <DataTable label="Hospitals" rows={data ?? []} columns={columns} rowKey={(h) => h.id} height={Math.max(1, (data ?? []).length) * 40} />
-        </div></div>
-      )}
-    </section>
   );
 }

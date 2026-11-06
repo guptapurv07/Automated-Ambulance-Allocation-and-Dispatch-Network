@@ -1,12 +1,14 @@
 # Background Demonstration: Commands
 
-Every command needed to show how the system works behind the terminal demonstration.
-Run them from the project folder, with the virtual environment active, one at a time.
+Every command needed to show the system: the dashboard, the terminal demonstration, and how
+it works behind them. Run them from the project folder, with the virtual environment active,
+one at a time.
 
-Use two terminal windows side by side:
+Use three terminal windows:
 
 * **Window A** runs the server and shows its log.
 * **Window B** is where you type everything else.
+* **Window C** runs the dashboard, from the `frontend` folder.
 
 ---
 
@@ -31,9 +33,67 @@ Window B. The terminal demonstration (the six scenes):
 python -m demo
 ```
 
+Window C. The dashboard. Go to its folder:
+
+```
+cd frontend
+```
+
+The first time, and after every pull that changed the dashboard, install its packages:
+
+```
+npm install
+```
+
+Start it and leave it running:
+
+```
+npm run dev
+```
+
+Window B. Open it in the browser:
+
+```
+open http://localhost:5173
+```
+
 ---
 
-## 2. How the API works
+## 2. The dashboard
+
+The dashboard calls the same API as everything else: it shows the system at work and
+decides nothing itself. The bottom of its sidebar says `Running` while the server answers.
+
+| Page | What to show |
+|---|---|
+| Live | Across the top: active calls, free ambulances, calls waiting for an ambulance, and the average response and share on time of the calls in progress. Below, the map: each ambulance drives along the roads to the patient, to the hospital, and back to its station. The button at the right end of the map's title bar shows it full screen, good on a projector; Esc or the same button brings it back. Beside it, the active dispatches with their response time against the target, the fleet by status, and the settings the server runs with |
+| Live, Simulator | `Start` sends a call every few seconds. `+10 calls` and `+35 calls` send them all at once; 35 calls for 30 ambulances, so `Free` drops to 0, `Waiting` goes up to 5, and it counts back down as ambulances come free and the scheduler hands them out |
+| Report emergency | Take a call: click the place on the map, choose severity, type and patients, press `Dispatch`. A place outside the service area cannot be sent |
+| Incidents | Every call. Click one: its own page follows it live, step by step |
+| History | Finished calls with their response time; red is late for the severity. Above the table, the totals and a chart of the share reached on time for each severity, in its colour |
+| Scenarios | The six cases of `python -m demo`, each with its own `Run` button (below) |
+| Fleet | Every ambulance, how long it has been in its status, and how long a returning one needs to reach its station |
+| Hospitals | The beds, and the ambulances handing a patient over at each hospital now |
+| System | Database and Redis; the clock and whether this server runs it; the queue; the worker threads and how many calls they handled; the settings |
+
+The Scenarios page, in order:
+
+| Scenario | What it shows |
+|---|---|
+| One emergency | A call is accepted at once; open the incident to follow it |
+| Five callers, one accident | Five calls at the same instant become one incident with five reports and one ambulance: the race condition on the duplicate check, solved with a lock |
+| Multiple patients | Three callers report 4, 5 and 5 injured; the accident gets five ambulances, all different |
+| Concurrent emergencies | As many calls at once as there are free ambulances, and none is given twice: the row locks. Then five more calls wait, and the scheduler decides who gets each ambulance that becomes free |
+| Outside the service area | A call from Delhi is refused (HTTP 422) and no ambulance moves |
+| Fleet and queue snapshot | The fleet, and the queue, worker and clock counters |
+
+Run one scenario at a time, and not while the terminal demonstration or the simulator is
+running: they share the same ambulances. "Concurrent emergencies" needs free ambulances; if
+none is free, wait a minute for the running calls to finish.
+
+---
+
+## 3. How the API works
 
 Leave the server running in Window A and type these in Window B.
 
@@ -124,7 +184,7 @@ open http://127.0.0.1:8000/docs
 
 ---
 
-## 3. What to point at in the server log (Window A)
+## 4. What to point at in the server log (Window A)
 
 Each line is one step of the system. For one call they appear in this order:
 
@@ -144,7 +204,7 @@ The second column, for example `worker-1` or `sim-clock`, is the thread that did
 
 ---
 
-## 4. Row-level locking in MySQL
+## 5. Row-level locking in MySQL
 
 Open two more terminal windows. In each one, log in to the database (it asks for the MySQL
 password):
@@ -186,6 +246,103 @@ Session 1. Release the lock:
 ```
 ROLLBACK;
 ```
+
+### A deadlock, and how the system prevents it
+
+A deadlock is two transactions that each hold a row the other one is waiting for, so neither
+can go on. Make one on purpose: the two sessions lock ambulances 7 and 8 in opposite orders.
+Do it while no calls are running.
+
+Session 1. Lock ambulance 7:
+
+```
+START TRANSACTION;
+```
+
+```
+SELECT id, call_sign FROM ambulances WHERE id = 7 FOR UPDATE;
+```
+
+Session 2. Lock ambulance 8:
+
+```
+START TRANSACTION;
+```
+
+```
+SELECT id, call_sign FROM ambulances WHERE id = 8 FOR UPDATE;
+```
+
+Session 1. Ask for ambulance 8. It waits, because session 2 holds it:
+
+```
+SELECT id, call_sign FROM ambulances WHERE id = 8 FOR UPDATE;
+```
+
+Session 2. Ask for ambulance 7. Now each session waits for the other:
+
+```
+SELECT id, call_sign FROM ambulances WHERE id = 7 FOR UPDATE;
+```
+
+MySQL finds the circle at once and ends one of the two transactions, here session 2:
+`ERROR 1213 (40001): Deadlock found when trying to get lock; try restarting transaction`.
+In the same moment session 1 gets ambulance 8.
+
+Session 2. MySQL's own record of it, under `LATEST DETECTED DEADLOCK`:
+
+```
+SHOW ENGINE INNODB STATUS\G
+```
+
+Session 1. Release the locks:
+
+```
+ROLLBACK;
+```
+
+Now the way the system does it: both sessions lock 7 first, then 8.
+
+Session 1:
+
+```
+START TRANSACTION;
+```
+
+```
+SELECT id, call_sign FROM ambulances WHERE id = 7 FOR UPDATE;
+```
+
+Session 2. It waits at ambulance 7 while it holds nothing, so no circle can form:
+
+```
+START TRANSACTION;
+```
+
+```
+SELECT id, call_sign FROM ambulances WHERE id = 7 FOR UPDATE;
+```
+
+Session 1. Within 50 seconds (MySQL's limit for a lock wait in these sessions), take
+ambulance 8 and finish:
+
+```
+SELECT id, call_sign FROM ambulances WHERE id = 8 FOR UPDATE;
+```
+
+```
+COMMIT;
+```
+
+Session 2 gets ambulance 7 now, with no error. Release it:
+
+```
+ROLLBACK;
+```
+
+This is the rule in `app/core/allocation.py`: the candidate ambulances are always locked in
+ascending id order, so a circular wait cannot form. If MySQL still reports a deadlock,
+`app/core/dispatcher.py` tries the call again with `SKIP LOCKED`, which waits for no lock.
 
 Then type `exit` in both sessions. A session left open with an unfinished transaction
 blocks the database reset.
@@ -230,13 +387,14 @@ uvicorn app.main:app --no-access-log
 
 ---
 
-## 5. The race condition, measured
+## 6. The race condition, measured
 
 Stop the server first (Ctrl+C in Window A). Each benchmark starts its own server and
 resets the database.
 
 Locking. 60 calls at the same instant with locking off, with `FOR UPDATE`, and with
-`SKIP LOCKED`. Without locking, ambulances are double-booked:
+`SKIP LOCKED`. Without locking, ambulances are double-booked. The `deadlocks` column stays at
+0: the ascending lock order of section 5 at work:
 
 ```
 python -m bench.loadtest
@@ -256,7 +414,7 @@ python -m bench.scheduling
 
 ---
 
-## 6. The same scene with a setting changed
+## 7. The same scene with a setting changed
 
 Stop the server, start it again with one setting changed, then run the scene in Window B.
 These commands are for macOS and Linux.
@@ -271,13 +429,18 @@ LOCKING_MODE=none RACE_WINDOW_MS=20 uvicorn app.main:app --no-access-log
 python -m demo --scene 4
 ```
 
+On the dashboard the System page shows `Locking` as `None (unsafe)`, and "Concurrent
+emergencies" on the Scenarios page shows the same result as a warning: "repeated ambulance
+assignment detected".
+
 After a run with locking off the data is wrong on purpose, so stop the server and reset:
 
 ```
 python -m sim.seed --reset
 ```
 
-First come, first served. In scene 4 the LOW calls are then served before the CRITICAL one:
+First come, first served. In scene 4 the LOW calls are then served before the CRITICAL one.
+The dashboard's System page shows `Queue order` as `FIFO`:
 
 ```
 QUEUE_SCHEDULER=fifo uvicorn app.main:app --no-access-log
@@ -297,7 +460,7 @@ uvicorn app.main:app --no-access-log
 
 ---
 
-## 7. Inside the database
+## 8. Inside the database
 
 In a MySQL session (`mysql -u root -p ambulance_dispatch`).
 
@@ -340,7 +503,7 @@ SHOW INDEX FROM incidents;
 
 ---
 
-## 8. Reinforcement Learning
+## 9. Reinforcement Learning
 
 These need no database and no server.
 
@@ -365,13 +528,13 @@ python -m rl.pg eval
 
 ---
 
-## 9. Two servers with Redis
+## 10. Two servers with Redis
 
 One server keeps its queue, the duplicate check's lock and its clock in its own memory. With
 Redis, several servers share all three and work as one system. Stop the server in Window A
 (Ctrl+C) first.
 
-Window C. Start Redis and leave it running:
+Window D. Start Redis and leave it running:
 
 ```
 redis-server
@@ -383,7 +546,7 @@ Window A. The first server, on port 8000:
 REDIS_URL=redis://127.0.0.1:6379/0 uvicorn app.main:app --port 8000 --no-access-log
 ```
 
-Window D. The second server, on port 8001:
+Window E. The second server, on port 8001:
 
 ```
 REDIS_URL=redis://127.0.0.1:6379/0 uvicorn app.main:app --port 8001 --no-access-log
@@ -412,6 +575,9 @@ runs the clock:
 ```
 curl -s http://127.0.0.1:8001/queue | python -m json.tool
 ```
+
+The dashboard in Window C stays on the first server. Its System page shows Redis as
+connected, and `Leader` under the clock says whether that server is the one running it.
 
 What Redis holds for this database:
 
@@ -458,11 +624,12 @@ uvicorn app.main:app --no-access-log
 
 ---
 
-## 10. With Docker
+## 11. With Docker
 
 The server, MySQL and Redis in three containers, started with one command. Stop a server
-running in Window A first, because Docker uses port 8000 too. On this Mac Docker runs in
-Colima, so start that first; it stays on until it is stopped or the Mac restarts.
+running in Window A first, because Docker uses port 8000 too. The dashboard in Window C
+keeps working, because the server in Docker answers on that same port. On this Mac Docker
+runs in Colima, so start that first; it stays on until it is stopped or the Mac restarts.
 
 ```
 colima start
@@ -499,7 +666,7 @@ Or from inside the server's container, which needs nothing installed on the comp
 docker compose exec app python -m demo
 ```
 
-MySQL inside Docker, for the row-lock demonstration of section 4. It is on port 3307, so
+MySQL inside Docker, for the row-lock demonstration of section 5. It is on port 3307, so
 use this in place of the `mysql` command there:
 
 ```
@@ -540,7 +707,7 @@ colima stop
 
 ---
 
-## 11. If something does not work
+## 12. If something does not work
 
 "REDIS_URL is set but Redis does not answer": Redis is not running. Start it with
 `redis-server` in its own window, or start the server without `REDIS_URL`.
@@ -559,6 +726,16 @@ The reset hangs: a MySQL window still has an open transaction. Type `ROLLBACK;` 
 ```
 lsof -i :8000
 ```
+
+The bottom of the dashboard's sidebar says `Server offline`: the server is not running on
+port 8000. Start it in Window A.
+
+"vite: command not found" when starting the dashboard: its packages are not installed. Run
+`npm install` in the `frontend` folder. Do the same after a pull that changed the dashboard,
+then reload the page in the browser.
+
+If port 5173 is taken, the dashboard starts on the next free port (5174) and prints the
+address to open.
 
 Start again from a clean state: stop the server, then
 

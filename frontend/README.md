@@ -21,11 +21,13 @@ Open http://localhost:5173. The dev server forwards every `/api/…` request to 
 
 | Page | What it shows |
 |---|---|
-| Live | The city map with every ambulance and hospital, the active dispatches, the fleet by status, the engine settings, and the call simulator |
+| Live | The headline numbers (active calls, free ambulances, calls waiting, and the average response and share on time of the calls in progress), the city map with every ambulance and hospital (full screen with the button in its title bar), the active dispatches, the fleet by status, the engine settings, and the call simulator |
 | Report emergency | The call taker's form: place, severity, type, patients; the location can be picked on the map |
 | Incidents | Every call, filtered by status and severity; each one opens its own live page |
-| History | Finished dispatches with their response time against the target for the severity |
-| Fleet | Every ambulance with its status and position, and the hospitals |
+| History | Finished dispatches with their response time against the target for the severity; above them the totals, and a chart of the share reached on time for each severity |
+| Scenarios | The six cases of the terminal demonstration (`python -m demo`), each run with one button |
+| Fleet | Every ambulance with its status, how long it has been in it (for one driving back, how long until it reaches its station), and its position |
+| Hospitals | Every hospital with its beds and the number of ambulances handing a patient over there now |
 | System | Database, Redis, clock, queue and workers, and the settings the server runs with |
 
 The simulator on Live sends random calls through the normal API, either one every few seconds or a burst of

@@ -99,3 +99,19 @@ export function Strip({ title, aside, className }: { title: ReactNode; aside?: R
     </div>
   );
 }
+
+/** A number tile: what it counts, the number, and an optional line under it. Tiles sit in a Figures row. */
+export function Figure({ label, value, detail, className }: { label: string; value: string; detail?: string; className?: string }) {
+  return (
+    <div className={clsx("grid content-start gap-1 bg-panel p-4", className)}>
+      <span className="text-dense text-muted">{label}</span>
+      <span className="num text-figure font-medium text-ink">{value}</span>
+      {detail && <span className="text-meta text-muted">{detail}</span>}
+    </div>
+  );
+}
+
+/** Number tiles divided by hairlines; `className` sets the columns. */
+export function Figures({ className, children }: { className?: string; children: ReactNode }) {
+  return <div className={clsx("grid gap-px border border-line bg-line", className)}>{children}</div>;
+}

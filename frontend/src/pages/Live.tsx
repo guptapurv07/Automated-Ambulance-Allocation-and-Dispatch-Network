@@ -1,16 +1,18 @@
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Maximize, Minimize } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { Ambulance, Dispatch, IncidentDetail, QueueStats } from "@/api/client";
-import { useAmbulances, useDispatches, useHealth, useIncidentDetails, useQueueStats } from "@/api/queries";
+import { useAmbulances, useDispatches, useHealth, useIncidentDetails, useIncidents, useQueueStats } from "@/api/queries";
 import { Clock } from "@/app/Shell";
 import { LOCKING_LABEL, PHASES, PHASE_LABEL, phaseOf, POLICY_LABEL, SCHEDULER_LABEL, SEVERITIES, speedText, SEVERITY_LABEL, SEVERITY_TONE, STATUS_LABEL, TARGET_MINUTES, type Phase } from "@/lib/domain";
+import { minutes, percent } from "@/lib/format";
 import { legOf, minutesLeft } from "@/lib/motion";
 import { useNow } from "@/lib/useNow";
-import { Button } from "@/ui/Button";
+import { Button, IconButton } from "@/ui/Button";
 import { CityMap, MapLegend } from "@/ui/CityMap";
 import { SimulatorPanel } from "@/ui/SimulatorPanel";
-import { Card, PageHeader, Strip } from "@/ui/layout";
-import { Banner, Chip, Skeleton, StatusDot } from "@/ui/status";
+import { Card, Figure, Figures, PageHeader, Strip } from "@/ui/layout";
+import { Banner, Chip, Skeleton } from "@/ui/status";
 
 /* ---------------------------------------------------------------- right rail */
 
@@ -96,7 +98,7 @@ function EnginePanel({ queue }: { queue?: QueueStats }) {
     ["Policy", h ? POLICY_LABEL[h.dispatch_policy] ?? h.dispatch_policy : "—"],
     ["Locking", h ? LOCKING_LABEL[h.locking_mode] ?? h.locking_mode : "—"],
     ["Queue", h ? SCHEDULER_LABEL[h.queue_scheduler] ?? h.queue_scheduler : "—"],
-    ["Waiting", queue ? String(queue.queue.depth) : "—"],
+    ["In queue", queue ? String(queue.queue.depth) : "—"],
     ["Sim speed", queue ? speedText(queue.clock.time_scale) : "—"],
   ];
   return (
@@ -114,6 +116,34 @@ function EnginePanel({ queue }: { queue?: QueueStats }) {
   );
 }
 
+/* ---------------------------------------------------------------- headline */
+
+/** The numbers to read first. Response is the wait plus the drive to the patient, stored when the ambulance is
+ *  assigned; on time means within the target for the call's severity. Both are for the calls in progress. */
+function Headline({ ambulances, dispatches, details, waiting }: {
+  ambulances: Ambulance[]; dispatches: Dispatch[]; details: Map<number, IncidentDetail>; waiting?: number;
+}) {
+  const free = ambulances.filter((a) => a.status === "AVAILABLE");
+  const back = free.filter((a) => phaseOf(a) === "returning").length;
+  const timed = dispatches.flatMap((d) => {
+    const sev = details.get(d.incident_id)?.incident.severity;
+    return d.response_minutes != null && sev ? [{ minutes: d.response_minutes, onTime: d.response_minutes <= TARGET_MINUTES[sev] }] : [];
+  });
+  const onTime = timed.filter((t) => t.onTime).length;
+  return (
+    <Figures className="grid-cols-2 sm:grid-cols-5">
+      <Figure label="Active calls" value={String(dispatches.length)} detail="ambulances on a call" />
+      <Figure label="Free" value={String(free.length)}
+        detail={back ? `${back} driving back` : free.length ? "at their stations" : undefined} />
+      <Figure label="Waiting" value={waiting == null ? "—" : String(waiting)} detail="for a free ambulance" />
+      <Figure label="Average response" value={minutes(timed.length ? timed.reduce((s, t) => s + t.minutes, 0) / timed.length : null)}
+        detail="calls in progress" />
+      <Figure label="On time" value={percent(timed.length ? onTime / timed.length : null)}
+        detail={timed.length ? `${onTime} of ${timed.length} calls in progress` : "calls in progress"} className="col-span-2 sm:col-span-1" />
+    </Figures>
+  );
+}
+
 /* ---------------------------------------------------------------- page */
 
 export default function Live() {
@@ -125,8 +155,25 @@ export default function Live() {
   const details = useIncidentDetails(dispatches);
   const timeScale = queue.data?.clock.time_scale ?? 60;
   const ambs = ambulances.data ?? [];
-  const free = ambs.filter((a) => a.status === "AVAILABLE").length;
+  // Accepted calls without an ambulance yet: on the queue, or back in the database until one is free.
+  const reported = useIncidents({ status: "REPORTED", limit: 1000 });
+  const unassigned = useIncidents({ status: "UNASSIGNED", limit: 1000 });
+  const waiting = reported.data && unassigned.data ? reported.data.length + unassigned.data.length : undefined;
   const avgSpeedKmph = useHealth().data?.avg_speed_kmph;
+
+  // The map card can take the whole screen (the browser's full-screen mode). Esc leaves it too, so the button
+  // follows the browser's state rather than its own.
+  const mapBox = useRef<HTMLDivElement>(null);
+  const [full, setFull] = useState(false);
+  useEffect(() => {
+    const sync = () => setFull(document.fullscreenElement === mapBox.current);
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+  const toggleFull = () => {
+    const done = full ? document.exitFullscreen() : mapBox.current?.requestFullscreen();
+    done?.catch(() => {});     // refused by the browser: the map stays as it is
+  };
 
   // On a wide screen the page fills the window exactly: the map takes all the height left under the header
   // and stays put, and only the panels on the right scroll. On a narrow screen everything stacks and scrolls.
@@ -134,12 +181,14 @@ export default function Live() {
     <div className="flex min-h-full flex-col min-[1100px]:h-full">
       <div className="px-4 pt-5 md:px-8 md:pt-7">
         <PageHeader crumbs={[{ label: "Live" }]} title="Live"
-          aside={<>
-            <Clock className="text-[14px] font-medium text-ink" />
-            {ambulances.data && <StatusDot status={free ? "ok" : "warn"} label={<span className="num text-meta text-muted">{free} of {ambs.length} free</span>} />}
-          </>}
+          aside={<Clock className="text-[14px] font-medium text-ink" />}
           actions={<Button variant="primary" onClick={() => navigate("/report")}>Report emergency</Button>} />
       </div>
+      {ambulances.data && (
+        <div className="px-4 pt-4 md:px-6 md:pt-6">
+          <Headline ambulances={ambs} dispatches={dispatches} details={details} waiting={waiting} />
+        </div>
+      )}
 
       <div className="grid flex-1 min-[1100px]:min-h-0 min-[1100px]:grid-cols-[minmax(0,1fr)_380px]">
         <div className="flex min-w-0 flex-col gap-4 p-4 md:p-6 min-[1100px]:min-h-0">
@@ -148,14 +197,18 @@ export default function Live() {
               Start it with <span className="mono">uvicorn app.main:app</span> on port 8000. This page reconnects on its own.
             </Banner>
           )}
-          <Card className="flex min-h-[420px] flex-1 flex-col">
-            <Strip title="Dehradun" />
-            {/* own row, so the legend can wrap on a narrow screen instead of pushing the title out */}
-            <div className="border-b border-line px-4 py-2"><MapLegend /></div>
-            {ambulances.isPending ? <Skeleton className="flex-1 outline-0" />
-              : <CityMap data={{ ambulances: ambs, dispatches, details, timeScale, avgSpeedKmph }} className="min-h-[360px] flex-1"
-                  onIncident={(id) => navigate(`/incidents/${id}`)} />}
-          </Card>
+          <div ref={mapBox} className="flex min-h-[420px] flex-1 flex-col">
+            <Card className="flex flex-1 flex-col">
+              <Strip title="Dehradun" aside={
+                <IconButton variant="overlay" size="xs" className="-my-1" label={full ? "Exit full screen" : "Full screen"}
+                  icon={full ? <Minimize size={16} strokeWidth={1.75} /> : <Maximize size={16} strokeWidth={1.75} />} onClick={toggleFull} />} />
+              {/* own row, so the legend can wrap on a narrow screen instead of pushing the title out */}
+              <div className="border-b border-line px-4 py-2"><MapLegend /></div>
+              {ambulances.isPending ? <Skeleton className="flex-1 outline-0" />
+                : <CityMap data={{ ambulances: ambs, dispatches, details, timeScale, avgSpeedKmph }} className="min-h-[360px] flex-1"
+                    onIncident={(id) => navigate(`/incidents/${id}`)} />}
+            </Card>
+          </div>
         </div>
         <aside aria-label="Overview" className="grid min-w-0 grid-cols-[minmax(0,1fr)] content-start gap-4 border-t border-line p-4 md:p-6 min-[1100px]:min-h-0 min-[1100px]:overflow-y-auto min-[1100px]:border-l min-[1100px]:border-t-0">
           <SimulatorPanel />

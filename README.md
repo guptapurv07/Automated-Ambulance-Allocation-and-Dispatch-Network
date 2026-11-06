@@ -39,7 +39,7 @@ A policy only ranks the candidates; the locking underneath stays the same.
 | Terminal demonstration | Built |
 | Several server processes side by side, sharing state through Redis | Built |
 | Docker: the server, MySQL and Redis started with one command | Built |
-| Dashboard (React, Leaflet map) | In progress |
+| Web dashboard (React, Leaflet map) | Built |
 | Deployment on AWS | Planned |
 
 ---
@@ -374,21 +374,25 @@ In the simulator, on 100 shifts the model was not trained on:
 | Sudden burst of calls | 12.77 | 12.41 | 12.43 |
 | Mixed fleets of 8 to 40 ambulances | 12.57 | 12.50 | 12.49 |
 
-On the real system (MySQL, worker pool, row locks), 20 shifts of 150 calls each:
+On the real system (MySQL, worker pool, row locks), 20 shifts of 150 calls each, measured
+again on 6 November 2026 with the ambulances driving back to their stations:
 
 | Policy | Response | Compared with nearest |
 |---|---|---|
-| Nearest | 12.53 | |
-| Lookahead | 11.99 | 0.53 faster, better on 14 of 20 shifts |
-| Learned (RL) | 11.98 | 0.54 faster (4.3%), better on 14 of 20 shifts |
+| Nearest | 12.85 | |
+| Learned (RL) | 12.16 | 0.69 faster (5.4%), better on 16 of 20 shifts |
 
-The learned policy is faster than nearest by 2 to 3 percent in the simulator and by 4.3
+On 14 October, before the drive back, the same shifts gave 12.53 for nearest, 11.99 for
+lookahead and 11.98 for learned: 0.54 faster (4.3%), better on 14 of 20.
+
+The learned policy is faster than nearest by 2 to 3 percent in the simulator and by 5.4
 percent on the real system, where the shifts were busier. On the real system this gain is
 statistically significant; on the earlier fleet of 12 ambulances it was not. It gives about
 the same result as the lookahead rule, so the training confirms the rule and does not find
 a better one. The model trained on the 12-ambulance fleet already gave the same result on
 the 30-ambulance fleet, because its inputs are relative (minutes and shares of calls), not
-tied to the number of ambulances.
+tied to the number of ambulances. It was trained in a simulator that keeps the ambulances at
+the hospital, and it kept its lead once the real system sent them back to their stations.
 
 With the learned policy switched on, the locking benchmark on the 30-ambulance fleet gives
 the same result as with nearest: all 30 ambulances used once each and none double-booked.
@@ -425,7 +429,7 @@ burst of 300 calls just as fast (about 30 calls a second in both cases on the te
   with no machine learning library
 * **Demonstration and benchmarks:** `httpx`, calling the server over its API
 * **Containers:** Docker and Docker Compose
-* **In progress:** React, Vite, TypeScript, Tailwind and Leaflet for the dashboard
+* **Dashboard:** React, Vite, TypeScript, Tailwind and Leaflet, with road data from OpenStreetMap
 * **Planned:** AWS (EC2)
 
 ---
@@ -483,6 +487,7 @@ bench/
   policy_ab.py         Dispatch policies compared on the real system
   multiserver.py       Two server processes side by side, without and with Redis
 demo/                  Terminal demonstration (python -m demo)
+frontend/              Web dashboard (React), described in its own README
 background/
   commands.md          Every command for showing the background parts, in order
 docs/                  ER diagram, concept notes and the Reinforcement Learning report
@@ -500,6 +505,7 @@ docker/start.sh        How the server starts in its container
 
 * Python 3.10 or higher
 * MySQL Server 8.0 or higher, running locally
+* Node.js 20.19 or higher, for the dashboard
 * Git
 
 ### Installation
@@ -547,6 +553,15 @@ docker/start.sh        How the server starts in its container
    ```bash
    python -m demo
    ```
+
+8. **Run the dashboard**, in a third terminal
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+   Then open **http://localhost:5173**. Its pages are described in
+   [`frontend/README.md`](frontend/README.md).
 
 After pulling changes that alter the tables, rebuild the database with
 `python -m sim.seed --reset`. The server does not start on tables that are older than the
@@ -670,7 +685,8 @@ waiting call gets each ambulance is still the scheduler's decision.
 
 It starts a server itself if none is running. To watch the server's log beside it, start
 the server in a second terminal first with `uvicorn app.main:app --no-access-log`.
-`python -m demo --scene 4` runs one scene with its prepared details and exits.
+`python -m demo --scene 4` runs one scene with its prepared details and exits. The
+dashboard's Scenarios page runs the same six cases, each with one button.
 
 To see what a mechanism does, start the server with one setting changed and run scene 4
 again.

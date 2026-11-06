@@ -2,18 +2,8 @@ import type { ReactNode } from "react";
 import { useHealth, useQueueStats } from "@/api/queries";
 import { DEFAULT_TIME_SCALE, LOCKING_LABEL, POLICY_LABEL, QUEUE_BACKEND_LABEL, REDIS_LABEL, SCHEDULER_LABEL, serviceAreaText, speedText } from "@/lib/domain";
 import { Button } from "@/ui/Button";
-import { Card, CardHeader, PageHeader } from "@/ui/layout";
+import { Card, CardHeader, Figure, Figures, PageHeader } from "@/ui/layout";
 import { Banner, Chip, Skeleton, StatusDot } from "@/ui/status";
-
-function Figure({ label, value, detail }: { label: string; value: string; detail?: string }) {
-  return (
-    <div className="grid gap-1 bg-panel p-4">
-      <span className="text-dense text-muted">{label}</span>
-      <span className="num text-figure font-medium text-ink">{value}</span>
-      {detail && <span className="text-meta text-muted">{detail}</span>}
-    </div>
-  );
-}
 
 function Rows({ rows }: { rows: [string, ReactNode][] }) {
   return (
@@ -56,12 +46,13 @@ export default function System() {
       {dbDown && <Banner kind="warning" title="Database unreachable">Calls are queued; nothing is assigned until MySQL is back.</Banner>}
       {redisDown && <Banner kind="warning" title="Redis unreachable">Calls queued in Redis wait until it answers.</Banner>}
 
-      <div className="grid gap-px border border-line bg-line sm:grid-cols-2 xl:grid-cols-4">
+      <Figures className="sm:grid-cols-2 xl:grid-cols-4">
         <Figure label="Database" value={dbDown ? "Unreachable" : "Connected"} />
         <Figure label="Redis" value={REDIS_LABEL[h.redis] ?? h.redis} />
         <Figure label="Free ambulances" value={h.ambulances_available == null ? "—" : String(h.ambulances_available)} />
-        <Figure label="Calls waiting" value={q ? String(q.queue.depth) : "—"} detail={q ? `Peak ${q.queue.peak_depth}` : undefined} />
-      </div>
+        {/* Calls on the queue for a worker. A call with no free ambulance waits in the database, not here. */}
+        <Figure label="In queue" value={q ? String(q.queue.depth) : "—"} detail={q ? `Peak ${q.queue.peak_depth}` : undefined} />
+      </Figures>
 
       <div className="grid items-start gap-5 xl:grid-cols-2">
         <Card className="grid gap-4 p-6">

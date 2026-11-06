@@ -69,7 +69,7 @@ const iconVariants: Record<IconVariant, string> = {
   muted: "border border-line-strong bg-panel text-muted hover:bg-panel-muted hover:text-ink",
   raised: "border border-line-strong bg-panel text-muted hover:bg-panel-muted hover:text-ink",
   ghost: "text-muted hover:bg-panel-muted hover:text-ink",
-  overlay: "text-ink hover:bg-panel-muted",
+  overlay: "text-ink hover:bg-surface-active",     // a clearer grey, so a lone icon reads as a button
 };
 
 export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
