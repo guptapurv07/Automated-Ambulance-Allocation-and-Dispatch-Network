@@ -56,7 +56,8 @@ export default function Incidents() {
 
   return (
     <div className="grid gap-7 px-4 py-5 md:px-8 md:py-7">
-      <PageHeader crumbs={[{ label: "Incidents" }]} title="Incidents" />
+      <PageHeader crumbs={[{ label: "Incidents" }]} title="Incidents"
+        actions={<Button variant="primary" onClick={() => navigate("/report")}>Report emergency</Button>} />
 
       <div className="flex flex-wrap items-center gap-3">
         <Tabs label="Show" value={show} onChange={(v) => set("show", v === "all" ? null : v)}
@@ -75,7 +76,8 @@ export default function Incidents() {
         </div></div>
       ) : (
         <Card className="px-5">
-          <EmptyState title={show === "all" ? "No calls yet." : "No calls match this filter."}>
+          <EmptyState title={show === "all" ? "No calls yet." : "No calls match this filter."}
+            actions={<Button variant="secondary" onClick={() => navigate("/report")}>Report emergency</Button>}>
             {!past && seededHidden > 0 ? `${seededHidden} seeded calls hidden.` : null}
           </EmptyState>
         </Card>

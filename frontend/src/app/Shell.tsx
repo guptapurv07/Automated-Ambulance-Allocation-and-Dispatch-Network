@@ -1,5 +1,5 @@
 import { clsx } from "clsx";
-import { Activity, Ambulance, FlaskConical, ListChecks, Map as MapIcon, Menu as MenuIcon, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Activity, Ambulance, History, ListChecks, Map as MapIcon, Menu as MenuIcon, PanelLeftClose, PanelLeftOpen, Siren } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useMatches, useNavigate } from "react-router-dom";
 import { useAmbulances, useHealth } from "@/api/queries";
@@ -17,10 +17,11 @@ const APP_NAME = "Ambulance Dispatch";
 
 const NAV = [
   { to: "/", label: "Live", icon: MapIcon, end: true },
+  { to: "/report", label: "Report emergency", icon: Siren },
   { to: "/incidents", label: "Incidents", icon: ListChecks },
+  { to: "/history", label: "History", icon: History },
   { to: "/fleet", label: "Fleet", icon: Ambulance },
   { to: "/system", label: "System", icon: Activity },
-  { to: "/scenarios", label: "Scenarios", icon: FlaskConical },
 ];
 
 /** Wall clock, ticking every second (Live header). */
@@ -132,7 +133,7 @@ function Sidebar() {
 
 /* ---------------------------------------------------------------- keyboard */
 
-const GLOBAL_KEYS: [string, string][] = [["g l", "Live"], ["g i", "Incidents"], ["g f", "Fleet"], ["g s", "System"], ["?", "Keyboard shortcuts"]];
+const GLOBAL_KEYS: [string, string][] = [["g l", "Live"], ["g r", "Report emergency"], ["g i", "Incidents"], ["g h", "History"], ["g f", "Fleet"], ["g s", "System"], ["?", "Keyboard shortcuts"]];
 const SHEET: { title: string; keys: [string, string][] }[] = [{ title: "Anywhere", keys: GLOBAL_KEYS }];
 
 export function isTyping(e: KeyboardEvent) {
@@ -144,7 +145,7 @@ function useGlobalKeys(openSheet: () => void) {
   const navigate = useNavigate();
   useEffect(() => {
     let g = 0;
-    const go: Record<string, string> = { l: "/", i: "/incidents", f: "/fleet", s: "/system" };
+    const go: Record<string, string> = { l: "/", r: "/report", i: "/incidents", h: "/history", f: "/fleet", s: "/system" };
     const onKey = (e: KeyboardEvent) => {
       if (isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "?" || (e.key === "/" && e.shiftKey)) {

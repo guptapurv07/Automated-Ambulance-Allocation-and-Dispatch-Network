@@ -41,11 +41,12 @@ function Figure({ label, value, detail }: { label: string; value: ReactNode; det
 
 export default function Incident() {
   const id = Number(useParams().id);
+  const navigate = useNavigate();
   if (!Number.isInteger(id) || id <= 0) return <NotFound />;
-  return <Tracker id={id} />;
+  return <Tracker id={id} onNew={() => navigate("/report")} />;
 }
 
-function Tracker({ id }: { id: number }) {
+function Tracker({ id, onNew }: { id: number; onNew: () => void }) {
   const navigate = useNavigate();
   const { data, isPending, isError, error } = useIncident(id);
   const queue = useQueueStats();
@@ -58,6 +59,7 @@ function Tracker({ id }: { id: number }) {
     <PageHeader crumbs={[{ label: "Incidents", to: "/incidents" }, { label: `Incident #${id}` }]} title={`Incident #${id}`} aside={aside}
       actions={<>
         <Button variant="secondary" onClick={() => navigate("/")}>Live map</Button>
+        <Button variant="primary" onClick={onNew}>New call</Button>
       </>} />
   );
   if (isPending) return <div className="grid gap-7 px-4 py-5 md:px-8 md:py-7">{header()}<Skeleton className="h-96" /></div>;
