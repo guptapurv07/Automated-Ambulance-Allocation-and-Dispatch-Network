@@ -47,3 +47,23 @@ export const useHospitals = () => useQuery({ queryKey: ["hospitals"], queryFn: (
 /** Incidents, newest first (the API pages them; 1000 is its largest page). */
 export const useIncidents = (f: { status?: IncidentStatus; severity?: Severity; top_level?: boolean; limit?: number; offset?: number } = {}) =>
   useQuery({ queryKey: ["incidents", "list", f], queryFn: () => api<Incident[]>("/incidents", { query: f }), refetchInterval: 2000, placeholderData: (p) => p });
+
+/** The latest 1000 finished dispatches, and the incidents they served (for severity and the response target). */
+export const useHistory = () =>
+  useQuery({
+    queryKey: ["history"],
+    queryFn: async () => {
+      const dispatches = await api<Dispatch[]>("/dispatches", { query: { status: "COMPLETED", limit: 1000 } });
+      const oldest = Math.min(...dispatches.map((d) => d.incident_id));
+      const incidents = new Map<number, Incident>();
+      for (let offset = 0; offset < 10000; offset += 1000) {           // page back until the oldest one is covered
+        const page = await api<Incident[]>("/incidents", { query: { limit: 1000, offset } });
+        for (const i of page) incidents.set(i.id, i);
+        if (page.length < 1000 || page[page.length - 1]!.id <= oldest) break;
+      }
+      return { dispatches, incidents };
+    },
+    refetchInterval: 5000,
+    placeholderData: (p) => p,
+  });
+
