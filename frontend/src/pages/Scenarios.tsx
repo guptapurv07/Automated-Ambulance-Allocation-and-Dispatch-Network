@@ -1,6 +1,7 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
-import { ApiError } from "@/api/client";
+import { useState, type ReactNode } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { ApiError, type IncidentDetail, type Severity } from "@/api/client";
+import { SEVERITY_LABEL, SEVERITY_TONE, STATUS_LABEL } from "@/lib/domain";
 import {
   runScene1,
   runScene2,
@@ -12,8 +13,12 @@ import {
 } from "@/lib/scenarios";
 import { Button } from "@/ui/Button";
 import { Card, PageHeader, Strip } from "@/ui/layout";
-import { Banner } from "@/ui/status";
+import { Banner, Chip } from "@/ui/status";
 import { toast } from "@/ui/Toast";
+
+/* The six cases of the terminal demonstration (python -m demo), run from the dashboard. Each one sends real
+   calls to the server through the normal API, so what it shows is the system at work: the duplicate check,
+   several patients, row locking under simultaneous calls, the waiting queue and the service-area check. */
 
 const SCENARIOS = [
   {
@@ -54,167 +59,107 @@ const SCENARIOS = [
   },
 ] as const;
 
+/** A small table in the dashboard's style: hairlines, upper-case headers, tabular numbers. */
+function Table({ head, rows }: { head: string[]; rows: ReactNode[][] }) {
+  return (
+    <div className="overflow-x-auto border border-line">
+      <table className="w-full text-left text-dense">
+        <thead>
+          <tr className="border-b border-line bg-panel-muted text-micro font-semibold uppercase tracking-[0.06em] text-muted">
+            {head.map((h) => <th key={h} className="px-3 py-2 font-semibold">{h}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="border-b border-line last:border-b-0">
+              {r.map((c, j) => <td key={j} className="num px-3 py-2 text-ink">{c}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const SubTitle = ({ children }: { children: ReactNode }) => (
+  <p className="text-micro font-semibold uppercase tracking-[0.08em] text-ink">{children}</p>
+);
+
 function IncidentLinks({ ids }: { ids?: number[] }) {
   if (!ids?.length) return null;
-
   return (
-    <div className="mt-3 flex flex-wrap gap-2">
+    <div className="flex flex-wrap gap-x-4 gap-y-1 text-dense">
       {ids.map((id) => (
-        <Link
-          key={id}
-          to={`/incidents/${id}`}
-          className="text-sm font-medium text-[var(--accent)] underline underline-offset-4"
-        >
-          Open incident #{id}
-        </Link>
+        <Link key={id} to={`/incidents/${id}`} className="mono font-medium text-ink underline underline-offset-4 hover:text-text">#{id}</Link>
       ))}
     </div>
   );
 }
 
+const SeverityChip = ({ severity }: { severity: string }) =>
+  severity in SEVERITY_LABEL
+    ? <Chip size="sm" tone={SEVERITY_TONE[severity as Severity]}>{SEVERITY_LABEL[severity as Severity]}</Chip>
+    : <>{severity}</>;
+
 function ResultDetails({ result }: { result: ScenarioResult }) {
+  const navigate = useNavigate();
   const details = result.details as Record<string, unknown> | undefined;
   if (!details) return null;
 
   if (Array.isArray(details.replies)) {
-    const replies = details.replies as Array<{
-      incident_id: number;
-      duplicate: boolean;
-      report_count: number;
-    }>;
+    const replies = details.replies as Array<{ incident_id: number; duplicate: boolean; report_count: number }>;
     return (
-      <div className="mt-4 overflow-x-auto">
-        <table className="w-full text-left text-sm">
-          <thead>
-            <tr className="border-b border-[var(--line)] text-[var(--muted)]">
-              <th className="py-2 pr-3">Caller</th>
-              <th className="py-2 pr-3">Incident</th>
-              <th className="py-2 pr-3">Duplicate</th>
-              <th className="py-2">Reports</th>
-            </tr>
-          </thead>
-          <tbody>
-            {replies.map((reply, index) => (
-              <tr key={index} className="border-b border-[var(--line)]">
-                <td className="py-2 pr-3">{index + 1}</td>
-                <td className="py-2 pr-3">#{reply.incident_id}</td>
-                <td className="py-2 pr-3">{reply.duplicate ? "Yes" : "No"}</td>
-                <td className="py-2">{reply.report_count}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <Table head={["Caller", "Incident", "Repeat of an earlier call", "Reports so far"]}
+        rows={replies.map((r, i) => [i + 1, <span className="mono">#{r.incident_id}</span>, r.duplicate ? "Yes" : "No, new incident", r.report_count])} />
+    );
+  }
+
+  if (Array.isArray(details.units)) {
+    const units = (details as IncidentDetail).units;
+    return (
+      <div className="grid gap-2">
+        <SubTitle>One ambulance per patient</SubTitle>
+        <Table head={["Patient", "Incident", "Ambulance"]}
+          rows={units.map((u, i) => [i + 1, <span className="mono">#{u.incident_id}</span>, <span className="mono">{u.ambulance?.call_sign ?? "waiting"}</span>])} />
       </div>
     );
   }
 
   if (Array.isArray(details.assignments)) {
-    const assignments = details.assignments as Array<{
-      incidentId: number;
-      ambulance: string;
-      place: string;
-      distanceKm: number;
-    }>;
-    const waiting = (details.waitingOrder ?? []) as Array<{
-      incidentId: number;
-      severity: string;
-      ambulance: string;
-    }>;
+    const assignments = details.assignments as Array<{ incidentId: number; ambulance: string; place: string; distanceKm: number }>;
+    const waiting = (details.waitingOrder ?? []) as Array<{ incidentId: number; severity: string; ambulance: string }>;
     return (
-      <div className="mt-4 space-y-4">
-        <div className="overflow-x-auto">
-          <p className="mb-2 text-sm font-semibold">Part 1 — Ambulance assignments</p>
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-[var(--line)] text-[var(--muted)]">
-                <th className="py-2 pr-3">Place</th>
-                <th className="py-2 pr-3">Incident</th>
-                <th className="py-2 pr-3">Ambulance</th>
-                <th className="py-2">Distance</th>
-              </tr>
-            </thead>
-            <tbody>
-              {assignments.map((row) => (
-                <tr key={row.incidentId} className="border-b border-[var(--line)]">
-                  <td className="py-2 pr-3">{row.place}</td>
-                  <td className="py-2 pr-3">#{row.incidentId}</td>
-                  <td className="py-2 pr-3">{row.ambulance}</td>
-                  <td className="py-2">{row.distanceKm.toFixed(1)} km</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <div className="grid gap-4">
+        <div className="grid gap-2">
+          <SubTitle>Part 1 · Ambulance assignments</SubTitle>
+          <Table head={["Place", "Incident", "Ambulance", "Distance"]}
+            rows={assignments.map((r) => [r.place, <span className="mono">#{r.incidentId}</span>, <span className="mono">{r.ambulance}</span>, `${r.distanceKm.toFixed(1)} km`])} />
         </div>
-        <div className="overflow-x-auto">
-          <p className="mb-2 text-sm font-semibold">Part 2 — Waiting calls served</p>
-          {waiting.length ? (
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-[var(--line)] text-[var(--muted)]">
-                  <th className="py-2 pr-3">Order</th>
-                  <th className="py-2 pr-3">Severity</th>
-                  <th className="py-2">Ambulance</th>
-                </tr>
-              </thead>
-              <tbody>
-                {waiting.map((row, index) => (
-                  <tr key={row.incidentId} className="border-b border-[var(--line)]">
-                    <td className="py-2 pr-3">{index + 1}</td>
-                    <td className="py-2 pr-3">{row.severity}</td>
-                    <td className="py-2">{row.ambulance}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p className="text-sm text-[var(--muted)]">No waiting calls were assigned during this run.</p>
-          )}
+        <div className="grid gap-2">
+          <SubTitle>Part 2 · Waiting calls, in the order they were served</SubTitle>
+          {waiting.length
+            ? <Table head={["Order", "Severity", "Incident", "Ambulance"]}
+                rows={waiting.map((r, i) => [i + 1, <SeverityChip severity={r.severity} />, <span className="mono">#{r.incidentId}</span>, <span className="mono">{r.ambulance}</span>])} />
+            : <p className="text-dense text-muted">No waiting calls were assigned during this run.</p>}
         </div>
       </div>
     );
   }
 
   if (Array.isArray(details.ambulances)) {
-    const ambulances = details.ambulances as Array<{
-      id: number;
-      call_sign: string;
-      station_name: string;
-      status: string;
-    }>;
-    const queue = details.queue as {
-      queue?: { depth?: number; scheduler?: string; backend?: string };
-      workers?: { size?: number; running?: boolean };
-    };
+    const ambulances = details.ambulances as Array<{ id: number; call_sign: string; station_name: string; status: keyof typeof STATUS_LABEL }>;
+    const queue = details.queue as { queue?: { depth?: number; scheduler?: string; backend?: string }; workers?: { size?: number } };
     return (
-      <div className="mt-4 space-y-3">
-        <p className="text-sm font-semibold">Fleet snapshot ({ambulances.length} ambulances)</p>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-[var(--line)] text-[var(--muted)]">
-                <th className="py-2 pr-3">Call sign</th>
-                <th className="py-2 pr-3">Station</th>
-                <th className="py-2">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ambulances.map((a) => (
-                <tr key={a.id} className="border-b border-[var(--line)]">
-                  <td className="py-2 pr-3">{a.call_sign}</td>
-                  <td className="py-2 pr-3">{a.station_name}</td>
-                  <td className="py-2">{a.status}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="text-sm text-[var(--muted)]">
-          Queue depth: {queue?.queue?.depth ?? "—"} · Scheduler: {queue?.queue?.scheduler ?? "—"} ·
-          Backend: {queue?.queue?.backend ?? "—"} · Workers: {queue?.workers?.size ?? "—"}
+      <div className="grid gap-2">
+        <SubTitle>Fleet ({ambulances.length} ambulances)</SubTitle>
+        <Table head={["Call sign", "Station", "Status"]}
+          rows={ambulances.map((a) => [<span className="mono">{a.call_sign}</span>, a.station_name, STATUS_LABEL[a.status] ?? a.status])} />
+        <p className="num text-dense text-muted">
+          Queue depth {queue?.queue?.depth ?? "—"} · scheduler {queue?.queue?.scheduler ?? "—"} · queue {queue?.queue?.backend ?? "—"} · {queue?.workers?.size ?? "—"} workers
         </p>
-        <div className="flex gap-3 text-sm">
-          <Link to="/fleet" className="text-[var(--accent)] underline">Open Fleet</Link>
-          <Link to="/system" className="text-[var(--accent)] underline">Open System</Link>
+        <div className="flex gap-4">
+          <Button variant="text" arrow onClick={() => navigate("/fleet")}>Fleet</Button>
+          <Button variant="text" arrow onClick={() => navigate("/system")}>System</Button>
         </div>
       </div>
     );
@@ -247,16 +192,13 @@ export default function Scenarios() {
   }
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-       crumbs={[{ label: "Dashboard", to: "/" }]}
-        title="Scenarios"
-        aside="Six live API demonstrations"
-      />
+    <div className="grid gap-7 px-4 py-5 md:px-8 md:py-7">
+      <PageHeader crumbs={[{ label: "Scenarios" }]} title="Scenarios"
+        aside={<span className="text-meta text-muted">Six live API demonstrations</span>} />
 
       <Banner kind="info" title="These are real API calls">
         Each scenario sends requests to the running dispatch server and may create incidents or dispatches.
-        Use a reset demo database when you want to start with a clean fleet.
+        To start with a clean fleet, stop the server and run <span className="mono">python -m sim.seed --reset</span>, then start it again.
       </Banner>
 
       <div className="grid gap-4">
@@ -265,66 +207,38 @@ export default function Scenarios() {
           const error = errors[scenario.id];
           return (
             <Card key={scenario.id}>
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-[var(--muted)]">
-                      SCENE {scenario.id}
-                    </span>
-                    <h2 className="font-semibold">{scenario.title}</h2>
-                  </div>
-                  <p className="mt-1 text-sm text-[var(--muted)]">{scenario.description}</p>
-                </div>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={running !== null}
-                  onClick={() => void execute(scenario.id, scenario.run)}
-                >
+              <Strip title={`Scene ${scenario.id} · ${scenario.title}`}
+                aside={<Button variant="primary" size="sm" disabled={running !== null} onClick={() => void execute(scenario.id, scenario.run)}>
                   {running === scenario.id ? "Running…" : "Run"}
-                </Button>
+                </Button>} />
+              <div className="grid gap-4 p-4">
+                <p className="text-dense text-muted">{scenario.description}</p>
+
+                {result && (
+                  <div className="grid gap-3 border-t border-line pt-4">
+                    <p className="text-dense font-semibold text-ink">{result.title}</p>
+                    <p className="text-dense text-ink">{result.message}</p>
+                    <IncidentLinks ids={result.incidentIds} />
+                    <ResultDetails result={result} />
+                  </div>
+                )}
+
+                {error && <Banner kind="error" title="Scenario could not complete">{error}</Banner>}
+
+                {scenario.id === 4 && (
+                  <div className="grid gap-1 border border-line bg-panel-muted p-3 text-meta text-muted">
+                    <p className="font-semibold text-ink">Race-condition comparison</p>
+                    <p>To show the failure mode, stop the server and restart it with locking switched off:</p>
+                    <code className="mono block break-all text-ink">LOCKING_MODE=none RACE_WINDOW_MS=20 uvicorn app.main:app</code>
+                    <p>Afterwards, restart it normally and reset the demo data:</p>
+                    <code className="mono block text-ink">python -m sim.seed --reset</code>
+                  </div>
+                )}
               </div>
-
-              {result && (
-                <div className="mt-4 border-t border-[var(--line)] pt-4">
-                  <p className="text-sm font-semibold">{result.title}</p>
-                  <p className="mt-1 text-sm">{result.message}</p>
-                  <IncidentLinks ids={result.incidentIds} />
-                  <ResultDetails result={result} />
-                </div>
-              )}
-
-              {error && (
-                <div className="mt-4">
-                  <Banner kind="error" title="Scenario could not complete">
-                    {error}
-                  </Banner>
-                </div>
-              )}
-
-              {scenario.id === 4 && (
-                <div className="mt-4 rounded-lg border border-[var(--line)] p-3 text-xs text-[var(--muted)]">
-                  <p className="font-semibold">Race-condition comparison</p>
-                  <p className="mt-1">To demonstrate the failure mode, stop the server and restart with locking disabled:</p>
-                  <code className="mt-2 block break-all">LOCKING_MODE=none RACE_WINDOW_MS=20 uvicorn app.main:app</code>
-                  <p className="mt-2">After the comparison, restart normally and reset the demo data:</p>
-                  <code className="mt-1 block">python -m sim.seed --reset</code>
-                </div>
-              )}
             </Card>
           );
         })}
       </div>
-<Strip
-  title="Start fresh"
-  aside={
-    <p className="text-sm text-[var(--muted)]">
-      To reset the demo data, stop the server and run{" "}
-      <code>python -m sim.seed --reset</code>, then start the server again.
-    </p>
-  }
-/>
-
-         </div>
+    </div>
   );
 }
