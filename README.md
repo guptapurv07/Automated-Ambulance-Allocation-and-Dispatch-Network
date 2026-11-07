@@ -40,7 +40,7 @@ A policy only ranks the candidates; the locking underneath stays the same.
 | Several server processes side by side, sharing state through Redis | Built |
 | Docker: the dashboard, the server, MySQL and Redis started with one command | Built |
 | Web dashboard (React, Leaflet map) | Built |
-| Deployment on AWS | Planned |
+| Deployment on AWS EC2, with the same Docker setup | Built |
 
 ---
 
@@ -430,7 +430,7 @@ burst of 300 calls just as fast (about 30 calls a second in both cases on the te
 * **Demonstration and benchmarks:** `httpx`, calling the server over its API
 * **Containers:** Docker and Docker Compose
 * **Dashboard:** React, Vite, TypeScript, Tailwind and Leaflet, with road data from OpenStreetMap
-* **Planned:** AWS (EC2)
+* **Cloud:** AWS EC2 (Ubuntu 24.04), running the same Docker setup
 
 ---
 
@@ -628,6 +628,81 @@ All settings live in `.env`. The most useful ones:
 
 The server does not start if `QUEUE_SCHEDULER` or `DISPATCH_POLICY` has an unknown value,
 or if `REDIS_URL` is set and Redis does not answer.
+
+---
+
+## Deployment on AWS
+
+The whole system runs on one Amazon EC2 server with the Docker setup above: the same four
+containers, started with the same command. Only the dashboard is open to the internet.
+
+| Part | Setting |
+|---|---|
+| Region | Asia Pacific (Mumbai), `ap-south-1` |
+| Server | EC2 `t3.small` (2 vCPUs, 2 GB memory), Ubuntu Server 24.04 LTS, 64-bit (x86) |
+| Disk | 20 GiB gp3, with a 2 GB swap file |
+| Firewall (security group) | SSH (port 22) from one address only, HTTP (port 80) from anywhere, nothing else |
+| Login | SSH with a key pair (`.pem` file), user `ubuntu` |
+| Software | Docker Engine and Docker Compose; the project cloned from GitHub |
+
+### Setting it up
+
+Done once, in this order.
+
+1. **AWS account.** Sign up on the Free plan, turn on MFA for the root user, and create a
+   monthly cost budget with an email alert (Billing and Cost Management, then Budgets).
+2. **Launch the server** (EC2, then Launch instance) in the Mumbai region: Ubuntu Server
+   24.04 LTS, `t3.small`, a new key pair (RSA, `.pem`), 20 GiB gp3, and a new security group
+   that allows SSH from your own address and HTTP from the internet. "My IP" can fill in an
+   IPv6 address when the network uses IPv6, as Jio does. The server has only an IPv4 address,
+   so the SSH rule must then be deleted and added again as Custom, with the laptop's IPv4
+   address followed by `/32`.
+3. **Connect** from the laptop. The key must be readable only by its owner:
+   ```bash
+   chmod 400 ~/.ssh/ambulance-key.pem
+   ssh -i ~/.ssh/ambulance-key.pem ubuntu@<public-ip>
+   ```
+4. **Prepare the server:** 2 GB of swap, so that building the dashboard cannot run out of
+   memory, and Docker from Docker's own install script:
+   ```bash
+   sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+   sudo mkswap /swapfile && sudo swapon /swapfile
+   echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+   curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh
+   sudo usermod -aG docker ubuntu
+   ```
+   Then log out and in again, so that `docker` works without `sudo`.
+5. **Get the project and start it.** The `.env` file is made on the server from the example,
+   with a random database password that never leaves the server:
+   ```bash
+   git clone https://github.com/guptapurv07/Automated-Ambulance-Allocation-and-Dispatch-Network.git
+   cd Automated-Ambulance-Allocation-and-Dispatch-Network
+   cp .env.example .env
+   sed -i "s/^DB_PASSWORD=.*/DB_PASSWORD=$(openssl rand -hex 16)/" .env
+   docker compose up --build -d
+   ```
+   The first build takes about five minutes. `docker compose ps` then shows four healthy
+   containers, and the dashboard opens at `http://<public-ip>`.
+
+### Running it
+
+Commands run on the server, in the project folder.
+
+| What | How |
+|---|---|
+| Update after a push to GitHub | `git pull`, then `docker compose up --build -d` |
+| Reset the data before a demonstration | `docker compose stop app`, then `docker compose run --rm app python -m sim.seed --reset`, then `docker compose start app` |
+| The server's log | `docker compose logs -f app` |
+| Pause the server to save credit | In EC2, Instances, Instance state: **Stop**. **Start** brings it back, and the containers start by themselves. Never **Terminate**: it deletes the server and its disk |
+
+* After a stop and a start, the server gets a new public address, unless an Elastic IP is
+  attached to it.
+* If SSH stops answering while the site still works, the laptop's own address has changed:
+  update the SSH rule in the security group.
+* The server's port 8000, MySQL and Redis are reachable only inside the server. The site uses
+  plain HTTP; HTTPS would need a domain name and a certificate.
+* On the AWS Free plan nothing is charged to the card unless the account is upgraded to a paid
+  plan. The server, its disk and its public address use roughly $0.70 of the free credit a day.
 
 ---
 
