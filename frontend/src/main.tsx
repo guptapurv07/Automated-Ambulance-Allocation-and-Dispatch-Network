@@ -21,7 +21,7 @@ const Incident = lazy(() => import("./pages/Incident"));
 const History = lazy(() => import("./pages/History"));
 const Scenarios = lazy(() => import("./pages/Scenarios"));
 const lazyPage = (el: ReactNode) => <Suspense fallback={null}>{el}</Suspense>;
-
+const Scenarios = lazy(() => import("./pages/Scenarios"));
 const qc = new QueryClient({
   defaultOptions: {
     queries: {
