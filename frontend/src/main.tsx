@@ -20,7 +20,7 @@ const Incidents = lazy(() => import("./pages/Incidents"));
 const Incident = lazy(() => import("./pages/Incident"));
 const History = lazy(() => import("./pages/History"));
 const lazyPage = (el: ReactNode) => <Suspense fallback={null}>{el}</Suspense>;
-
+const Scenarios = lazy(() => import("./pages/Scenarios"));
 const qc = new QueryClient({
   defaultOptions: {
     queries: {
@@ -43,6 +43,7 @@ const router = createBrowserRouter([
       page("Incidents", lazyPage(<Incidents />), "/incidents"),
       page("Incident", lazyPage(<Incident />), "/incidents/:id"),
       page("History", lazyPage(<History />), "/history"),
+      page("Scenarios", lazyPage(<Scenarios />), "/scenarios"),
       page("Fleet", lazyPage(<Fleet />), "/fleet"),
       page("System", lazyPage(<System />), "/system"),
       page("Not found", <NotFound />, "*"),

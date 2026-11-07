@@ -51,16 +51,17 @@ const BURST_CALLS = BURST_PLACES.flatMap(([name, lat, lon], k) =>
       lon: lon + dLon,
       severity,
       incident_type,
+      patients: 1,
     } as CallInput & { place: string };
   }),
 );
 
 const LATE_CALLS: CallInput[] = [
-  { severity: "LOW", incident_type: "INJURY", lat: 30.3180, lon: 78.0300 },
-  { severity: "LOW", incident_type: "OTHER", lat: 30.3195, lon: 78.0420 },
-  { severity: "MEDIUM", incident_type: "OTHER", lat: 30.3215, lon: 78.0345 },
-  { severity: "HIGH", incident_type: "BREATHING", lat: 30.3150, lon: 78.0380 },
-  { severity: "CRITICAL", incident_type: "CARDIAC", lat: 30.3240, lon: 78.0290 },
+  { severity: "LOW", incident_type: "INJURY", lat: 30.3180, lon: 78.0300, patients: 1},
+  { severity: "LOW", incident_type: "OTHER", lat: 30.3195, lon: 78.0420, patients: 1 },
+  { severity: "MEDIUM", incident_type: "OTHER", lat: 30.3215, lon: 78.0345, patients: 1 },
+  { severity: "HIGH", incident_type: "BREATHING", lat: 30.3150, lon: 78.0380, patients: 1 },
+  { severity: "CRITICAL", incident_type: "CARDIAC", lat: 30.3240, lon: 78.0290, patients: 1 },
 ];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -108,6 +109,7 @@ export async function runScene2(): Promise<ScenarioResult> {
       lon: place.lon + k * 0.00003,
       severity: "HIGH",
       incident_type: "ROAD_ACCIDENT",
+      patients: 1,
       caller_phone: `98970000${String(k).padStart(2, "0")}`,
       description: `Accident at ${place.name}`,
     }),
@@ -236,6 +238,7 @@ export async function runScene5(): Promise<ScenarioResult> {
       lon: 77.2090,
       severity: "CRITICAL",
       incident_type: "ROAD_ACCIDENT",
+      patients: 1,
       description: "Test call outside the service area",
     });
     throw new Error("The server accepted the Delhi call; the expected 422 refusal did not occur.");

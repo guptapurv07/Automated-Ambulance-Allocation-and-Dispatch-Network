@@ -249,7 +249,7 @@ export default function Scenarios() {
   return (
     <div className="space-y-6">
       <PageHeader
-        crumbs={["Dashboard"]}
+       crumbs={[{ label: "Dashboard", to: "/" }]}
         title="Scenarios"
         aside="Six live API demonstrations"
       />
@@ -315,13 +315,16 @@ export default function Scenarios() {
           );
         })}
       </div>
+<Strip
+  title="Start fresh"
+  aside={
+    <p className="text-sm text-[var(--muted)]">
+      To reset the demo data, stop the server and run{" "}
+      <code>python -m sim.seed --reset</code>, then start the server again.
+    </p>
+  }
+/>
 
-      <Strip title="Start fresh">
-        <p className="text-sm text-[var(--muted)]">
-          To reset the demo data, stop the server and run{" "}
-          <code>python -m sim.seed --reset</code>, then start the server again.
-        </p>
-      </Strip>
-    </div>
+         </div>
   );
 }

@@ -20,6 +20,7 @@ const NAV = [
   { to: "/report", label: "Report emergency", icon: Siren },
   { to: "/incidents", label: "Incidents", icon: ListChecks },
   { to: "/history", label: "History", icon: History },
+   { to: "/scenarios", label: "Scenarios", icon: ListChecks },
   { to: "/fleet", label: "Fleet", icon: Ambulance },
   { to: "/system", label: "System", icon: Activity },
 ];
