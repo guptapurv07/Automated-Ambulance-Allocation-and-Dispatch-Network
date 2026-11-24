@@ -43,6 +43,7 @@ more calls than there are ambulances, so some have to wait.
 |---|---|
 | `npm run dev` | Dev server with hot reload |
 | `npm run build` | Type-check and build into `dist/` |
+| `npm run typecheck` | Type-check only, without building; run it before committing |
 | `npm run preview` | Serve the build (also forwards `/api`) |
 | `npm test` | Unit tests (routing and movement along roads) |
 | `npm run gen:api` | Regenerate `src/api/schema.d.ts` from the running server's OpenAPI schema |
